@@ -3,63 +3,77 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 
+// ===== helpers (module scope) =====
+function randInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+function randFloat(min: number, max: number) {
+  return Math.random() * (max - min) + min;
+}
+
+// ===== types =====
 type LeaderRow = { username: string; score: number };
 
+// ===== component =====
 export default function Page() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // ui
+  // UI
   const [scoreText, setScoreText] = useState('0');
   const [hint, setHint] = useState('tap Play, then Space or click to flap');
   const [leader, setLeader] = useState<LeaderRow[]>([]);
   const [viewer, setViewer] = useState<{ username: string; fid?: number }>({ username: 'guest' });
 
-  // game refs
+  // Game refs
   const state = useRef<'start' | 'playing' | 'over'>('start');
   const score = useRef(0);
   const frames = useRef(0);
   const safeFrames = useRef(0);
   const pipes = useRef<Pipe[]>([]);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const nextSpawnAt = useRef(60); // schedule (frames)
 
-  // constants
+  // Canvas constants
   const W = 640, H = 480, GROUND_H = 60;
-  const GAP_MIN = 260, GAP_MAX = 320; // random pipe gap range
-  const SPEED = 1.9;
 
-  // tuned physics
+  // Pipe randomness (balanced)
+  const GAP_RANGE: [number, number] = [190, 260];     // opening height
+  const WIDTH_RANGE: [number, number] = [60, 80];     // pipe thickness
+  const SPEED_BASE = 2.0;                              // avg px/frame
+  const SPEED_JITTER: [number, number] = [-0.2, 0.2];  // tiny variance
+  const SPAWN_BASE = 110;                               // frames between spawns
+  const SPAWN_JITTER: [number, number] = [0, 25];      // mild randomness
+  const CLUSTER_PROB = 0.15;                            // rare close buddy
+  const CLUSTER_OFFSET_PX: [number, number] = [130, 180];
+  const VERTICAL_DRIFT = 20;                            // small gap wander
+
+  // Bird physics (tuned)
   const GRAVITY = 0.16;
   const JUMP_IMPULSE = -6.0;
   const MAX_UP = -9;
   const MAX_DOWN = 8;
   const FLAP_COOLDOWN = 10;
 
-  // bird
-  const bird = useRef({ x: 120, y: H * 0.4, v: 0, r: 26 });
+  // Bird
+  const bird = useRef({ x: 120, y: H * 0.4, v: 0, r: 20 });
   const flapCd = useRef(0);
 
-  // ---- Mini App: announce ready + load user context ----
+  // Mini App context
   useEffect(() => {
-    // hide splash
     sdk.actions.ready();
-
-    // if we're in a Mini App, pull the viewer context (fid/username)
     (async () => {
       try {
         const inMini = await sdk.isInMiniApp();
         if (inMini) {
-          const ctx = await sdk.context; // has user: { fid, username, ... }
+          const ctx = await sdk.context;
           const u = ctx?.user;
           if (u?.username) setViewer({ username: u.username, fid: u.fid });
         }
-      } catch (e) {
-        // non-fatal; stick with "guest"
-        console.warn('context read failed', e);
-      }
+      } catch {}
     })();
   }, []);
 
-  // ---- Canvas + game loop ----
+  // Canvas + loop
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
@@ -77,7 +91,7 @@ export default function Page() {
       g.addColorStop(0, '#6ea0ff'); g.addColorStop(1, '#7b57c7');
       ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
-      // ground band + top line
+      // ground
       ctx.fillStyle = '#45308b';
       ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
       ctx.strokeStyle = '#2e1f63'; ctx.lineWidth = 4;
@@ -109,23 +123,28 @@ export default function Page() {
         if (b.v < MAX_UP) b.v = MAX_UP;
         b.y += b.v;
 
-        // spawn pipes after a short delay, then regularly
-        if (frames.current > 60 && frames.current % 120 === 0) {
-          pipes.current.push(new Pipe(W, H, GROUND_H, GAP_MIN, GAP_MAX, SPEED));
+        // spawn (interval + jitter)
+        if (frames.current >= nextSpawnAt.current) {
+          spawnPipe(W);
+          scheduleNextSpawn();
         }
 
-        // pipes + scoring + collisions
+        // pipes update, collide, score by pass
         for (let i = pipes.current.length - 1; i >= 0; i--) {
           const p = pipes.current[i];
           p.update();
           p.draw(ctx);
-          if (safeFrames.current <= 0 && p.collidesWith(b)) endGame();
+
           if (!p.scored && b.x > p.x + p.width) {
             p.scored = true;
             score.current++;
             setScoreText(String(score.current));
           }
-          if (p.x + p.width < 0) pipes.current.splice(i, 1);
+          if (p.x + p.width < 0) {
+            pipes.current.splice(i, 1);
+            continue;
+          }
+          if (safeFrames.current <= 0 && p.collidesWith(b)) endGame();
         }
 
         // ceiling
@@ -139,7 +158,6 @@ export default function Page() {
       }
 
       drawBird();
-
       requestAnimationFrame(step);
     }
 
@@ -165,7 +183,48 @@ export default function Page() {
     };
   }, []);
 
-  // ---- Simple API helpers (optional; no-op if routes/env not set) ----
+  // spawning helpers (moving mode)
+  function spawnPipe(startX = W) {
+    // base randomized pipe
+    const speed = SPEED_BASE + randFloat(SPEED_JITTER[0], SPEED_JITTER[1]);
+    const p = new Pipe(startX, H, GROUND_H, {
+      gap: randInt(GAP_RANGE[0], GAP_RANGE[1]),
+      width: randInt(WIDTH_RANGE[0], WIDTH_RANGE[1]),
+      speed
+    });
+
+    // gentle vertical drift vs last pipe
+    const last = pipes.current.length ? pipes.current[pipes.current.length - 1] : null;
+    if (last) {
+      const drift = randInt(-VERTICAL_DRIFT, VERTICAL_DRIFT);
+      const topMin = 40;
+      const topMax = Math.max(topMin, H - GROUND_H - p.gap - 40);
+      p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
+    }
+    pipes.current.push(p);
+
+    // rare “close pair”
+    if (Math.random() < CLUSTER_PROB) {
+      const buddyX = startX + randInt(CLUSTER_OFFSET_PX[0], CLUSTER_OFFSET_PX[1]);
+      const buddy = new Pipe(buddyX, H, GROUND_H, {
+        gap: randInt(GAP_RANGE[0], GAP_RANGE[1]),
+        width: randInt(WIDTH_RANGE[0], WIDTH_RANGE[1]),
+        speed
+      });
+      // align buddy roughly with slight extra drift
+      const topMin = 40;
+      const topMax = Math.max(topMin, H - GROUND_H - buddy.gap - 40);
+      buddy.top = Math.min(topMax, Math.max(topMin, p.top + randInt(-10, 10)));
+      pipes.current.push(buddy);
+    }
+  }
+
+  function scheduleNextSpawn() {
+    const jitter = randInt(SPAWN_JITTER[0], SPAWN_JITTER[1]);
+    nextSpawnAt.current += SPAWN_BASE + jitter;
+  }
+
+  // Optional API helpers (safe if routes not set)
   async function sendScore(username: string, s: number) {
     try {
       await fetch('/api/score', {
@@ -173,7 +232,7 @@ export default function Page() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, score: s })
       });
-    } catch {/* ignore in dev */}
+    } catch {}
   }
   async function loadLeaderboard() {
     try {
@@ -181,34 +240,31 @@ export default function Page() {
       if (!r.ok) return;
       const data = (await r.json()) as LeaderRow[];
       setLeader(data);
-    } catch {/* ignore in dev */}
+    } catch {}
   }
 
-  // ---- Game control ----
+  // Controls
   function startGame() {
     state.current = 'playing';
     setHint(`fly, @${viewer.username}!`);
     pipes.current = [];
     score.current = 0;
     frames.current = 0;
-    safeFrames.current = 90;        // ~1.5s grace period
+    safeFrames.current = 90;        // grace
     flapCd.current = 0;
     setScoreText('0');
     bird.current.y = H * 0.4;
     bird.current.v = 0;
+    nextSpawnAt.current = frames.current + 60; // first pipe ~1s in
   }
-
   function restartGame() { startGame(); }
-
   function endGame() {
     if (state.current !== 'playing') return;
     state.current = 'over';
     setHint('game over. press Restart');
-    // store + refresh board (if APIs exist)
     void sendScore(viewer.username, score.current).then(loadLeaderboard);
   }
 
-  // first paint: try to load board (safe to ignore errors)
   useEffect(() => { void loadLeaderboard(); }, []);
 
   return (
@@ -217,16 +273,13 @@ export default function Page() {
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
           <button type="button" onClick={startGame} style={btn}>Play</button>
           <button type="button" onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }}>Restart</button>
-          <div style={{ fontWeight: 700, marginLeft: 'auto' }}>
-            {scoreText}
-          </div>
+          <div style={{ fontWeight: 700, marginLeft: 'auto' }}>{scoreText}</div>
         </div>
 
         <canvas ref={canvasRef} />
 
         <div style={{ color: '#b8a7d9', fontSize: 12, marginTop: 8 }}>{hint}</div>
 
-        {/* Leaderboard (renders only if API returns data) */}
         {leader.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <h4 style={{ margin: '8px 0' }}>Leaderboard</h4>
@@ -242,6 +295,7 @@ export default function Page() {
   );
 }
 
+// ===== styles =====
 const btn: React.CSSProperties = {
   background: '#8e44ad',
   color: '#fff',
@@ -252,30 +306,33 @@ const btn: React.CSSProperties = {
   cursor: 'pointer'
 };
 
-// pipe with randomized height and gap
+// ===== Pipe class (moving) =====
 class Pipe {
-  x: number; width: number; gap: number; top: number; speed: number; H: number; ground: number; scored = false;
-  constructor(W: number, H: number, GROUND_H: number, GAP_MIN: number, GAP_MAX: number, SPEED: number) {
-    this.x = W;
-    this.width = 70;
+  x: number; width: number; gap: number; top: number; speed: number;
+  H: number; ground: number; scored = false;
+  constructor(startX: number, H: number, GROUND_H: number, opts?: {
+    gap?: number; width?: number; speed?: number; top?: number;
+  }) {
+    this.x = startX;
     this.H = H;
     this.ground = GROUND_H;
-    this.speed = SPEED;
 
-    this.gap = randInt(GAP_MIN, GAP_MAX);
+    this.gap   = opts?.gap   ?? randInt(190, 260);
+    this.width = opts?.width ?? randInt(60, 80);
+    this.speed = opts?.speed ?? 2.0;
 
     const topMin = 40;
-    const topMax = H - GROUND_H - this.gap - 40;
-    this.top = randInt(topMin, topMax);
+    const topMax = Math.max(topMin, H - GROUND_H - this.gap - 40);
+    this.top = opts?.top ?? randInt(topMin, topMax);
   }
-  update() { this.x -= this.speed; }
+  update() {
+    this.x -= this.speed;
+  }
   draw(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
-
     // top
     ctx.fillRect(this.x, 0, this.width, this.top);
     ctx.strokeRect(this.x, 0, this.width, this.top);
-
     // bottom
     const bottomY = this.top + this.gap;
     const bottomH = this.H - this.ground - bottomY;
@@ -290,8 +347,4 @@ class Pipe {
     }
     return false;
   }
-}
-
-function randInt(min: number, max: number) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
