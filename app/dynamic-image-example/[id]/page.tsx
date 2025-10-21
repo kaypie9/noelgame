@@ -1,5 +1,5 @@
 import App from "@/components/Home";
-import { env } from "@/lib/env";
+import { env } from "@/env";
 import { Metadata } from "next";
 
 const appUrl = env.NEXT_PUBLIC_URL;

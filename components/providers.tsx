@@ -1,7 +1,7 @@
 "use client";
 
 import { MiniAppProvider } from "@/contexts/miniapp-context";
-import { env } from "@/lib/env";
+import { env } from "@/env";
 import { MiniKitProvider } from "@coinbase/onchainkit/minikit";
 import dynamic from "next/dynamic";
 import { base } from "viem/chains";

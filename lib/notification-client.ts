@@ -4,7 +4,7 @@ import {
   type SendNotificationRequest,
   sendNotificationResponseSchema,
 } from "@farcaster/frame-sdk";
-import { env } from "./env";
+import { env } from "../env";
 
 const appUrl = env.NEXT_PUBLIC_URL || "";
 

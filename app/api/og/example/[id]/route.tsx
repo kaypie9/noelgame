@@ -1,4 +1,4 @@
-import { env } from "@/lib/env";
+import { env } from "@/env";
 import { loadGoogleFont, loadImage } from "@/lib/og-utils";
 import { ImageResponse } from "next/og";
 

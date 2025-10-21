@@ -1,4 +1,4 @@
-import { env } from "@/lib/env";
+import { env } from "@/env";
 import { fetchUser } from "@/lib/neynar";
 import * as jose from "jose";
 import { NextRequest, NextResponse } from "next/server";

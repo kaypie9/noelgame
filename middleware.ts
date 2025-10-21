@@ -1,6 +1,6 @@
 import * as jose from "jose";
 import { NextRequest, NextResponse } from "next/server";
-import { env } from "./lib/env";
+import { env } from "./env";
 
 export const config = {
   matcher: ["/api/:path*"],
