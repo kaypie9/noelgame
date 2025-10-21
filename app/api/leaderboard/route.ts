@@ -1,4 +1,3 @@
-// app/api/leaderboard/route.ts
 import { NextResponse } from 'next/server';
 
 export async function GET() {
@@ -13,8 +12,8 @@ export async function GET() {
       token: process.env.REDIS_TOKEN,
     });
 
-    // Use zrange + rev:true instead of zrevrange (works across versions)
-    const flat = (await redis.zrange('leaderboard', {
+    // v1-compatible: use object form and cast to any to appease TS defs in 1.x
+    const flat = (await (redis as any).zrange('leaderboard', {
       start: 0,
       stop: 9,
       rev: true,
