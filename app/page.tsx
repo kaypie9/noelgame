@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
 
+import { useAccount, useSendTransaction } from 'wagmi';
+import { base } from 'wagmi/chains';
+// import { stringToHex } from 'viem'; // optional if you want to tag tx data
+
 /* ----------------- utils ----------------- */
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
 const rf = (a: number, b: number) => Math.random() * (b - a) + a;
@@ -22,6 +26,10 @@ export default function Page() {
   const [leader, setLeader] = useState<LeaderRow[]>([]);
   const [viewer, setViewer] = useState<{ username: string; fid?: number }>({ username: 'guest' });
 
+  // Wallet
+  const { address, isConnected } = useAccount();
+  const { sendTransactionAsync } = useSendTransaction();
+
   // Game state
   const state = useRef<'start' | 'playing' | 'over'>('start');
   const score = useRef(0);
@@ -36,20 +44,17 @@ export default function Page() {
   const GROUND_H = useRef(60);
   const ASPECT = 9 / 16; // portrait width/height
 
-// Difficulty knobs (balanced/fair)
-const GAP_RANGE: [number, number] = [170, 230];      // wider openings
-const WIDTH_RANGE: [number, number] = [50, 80];      // slimmer pipes
-const SPEED_BASE = 2.2;                               // a bit slower
-const SPEED_JITTER: [number, number] = [-0.1, 0.2];
-const SPAWN_BASE = 110;                               // more spacing
-const SPAWN_JITTER: [number, number] = [0, 30];
-const CLUSTER_PROB = 0.25;                            // fewer pairs
-const CLUSTER_OFFSET: [number, number] = [140, 210];  // wider pair spacing
-const VERTICAL_DRIFT = 25;                            // gentler wander
-
-// Keep a guaranteed horizontal space between consecutive pipes:
-const MIN_H_SPACING = 100; // px
-
+  // Difficulty knobs (balanced/fair)
+  const GAP_RANGE: [number, number] = [170, 230];      // wider openings
+  const WIDTH_RANGE: [number, number] = [50, 80];      // slimmer pipes
+  const SPEED_BASE = 2.2;                               // a bit slower
+  const SPEED_JITTER: [number, number] = [-0.1, 0.2];
+  const SPAWN_BASE = 110;                               // more spacing
+  const SPAWN_JITTER: [number, number] = [0, 30];
+  const CLUSTER_PROB = 0.25;                            // fewer pairs
+  const CLUSTER_OFFSET: [number, number] = [140, 210];  // wider pair spacing
+  const VERTICAL_DRIFT = 25;                            // gentler wander
+  const MIN_H_SPACING = 100;                            // guaranteed px between pipes
 
   // Bird physics
   const GRAVITY = 0.17;
@@ -204,58 +209,74 @@ const MIN_H_SPACING = 100; // px
     };
   }, []);
 
+  /* ---------- request transaction before starting ---------- */
+  async function requestGameTx(action: 'play' | 'restart'): Promise<boolean> {
+    if (!isConnected || !address) {
+      setHint('Connect wallet first.'); return false;
+    }
+    try {
+      // Minimal on-chain ping: 0 ETH to self on Base (gas only)
+await sendTransactionAsync({
+  to: address,
+  // value: 0n,          // ← delete this line
+  chainId: base.id,
+});
+      return true;
+    } catch {
+      setHint('Transaction canceled.');
+      return false;
+    }
+  }
+
   /* ---------- spawning ---------- */
-function spawnPipe(startX = W.current) {
-  const _H = H.current, _G = GROUND_H.current;
+  function spawnPipe(startX = W.current) {
+    const _H = H.current, _G = GROUND_H.current;
 
-  // Enforce spacing vs the last pipe on screen
-  const last = pipes.current[pipes.current.length - 1];
-  if (last) {
-    const minAllowedX = last.x + last.width + MIN_H_SPACING;
-    if (startX < minAllowedX) startX = minAllowedX;
-  }
+    // enforce horizontal spacing vs the last pipe
+    const last = pipes.current[pipes.current.length - 1];
+    if (last) {
+      const minAllowedX = last.x + last.width + MIN_H_SPACING;
+      if (startX < minAllowedX) startX = minAllowedX;
+    }
 
-  const base = SPEED_BASE + rf(SPEED_JITTER[0], SPEED_JITTER[1]);
-  const p = new Pipe(startX, _H, _G, {
-    gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
-    width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
-    speed: base
-  });
-
-  // Small vertical drift vs previous pipe (within limits)
-  if (last) {
-    const drift = ri(-VERTICAL_DRIFT, VERTICAL_DRIFT);
-    const topMin = 40;
-    const topMax = Math.max(topMin, _H - _G - p.gap - 40);
-    p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
-  }
-  pipes.current.push(p);
-
-  // Optional close buddy — but still honor spacing
-  if (Math.random() < CLUSTER_PROB) {
-    let buddyX = startX + ri(CLUSTER_OFFSET[0], CLUSTER_OFFSET[1]);
-    // ensure buddy isn’t overlapping this pipe
-    const minBuddyX = p.x + p.width + MIN_H_SPACING;
-    if (buddyX < minBuddyX) buddyX = minBuddyX;
-
-    const buddy = new Pipe(buddyX, _H, _G, {
+    const base = SPEED_BASE + rf(SPEED_JITTER[0], SPEED_JITTER[1]);
+    const p = new Pipe(startX, _H, _G, {
       gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
       width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
       speed: base
     });
 
-    const topMin = 40;
-    const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
-    buddy.top = Math.min(topMax, Math.max(topMin, p.top + ri(-10, 10)));
-    pipes.current.push(buddy);
+    // small vertical drift vs previous pipe
+    if (last) {
+      const drift = ri(-VERTICAL_DRIFT, VERTICAL_DRIFT);
+      const topMin = 40;
+      const topMax = Math.max(topMin, _H - _G - p.gap - 40);
+      p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
+    }
+    pipes.current.push(p);
+
+    // optional close buddy, but honor spacing
+    if (Math.random() < CLUSTER_PROB) {
+      let buddyX = startX + ri(CLUSTER_OFFSET[0], CLUSTER_OFFSET[1]);
+      const minBuddyX = p.x + p.width + MIN_H_SPACING;
+      if (buddyX < minBuddyX) buddyX = minBuddyX;
+
+      const buddy = new Pipe(buddyX, _H, _G, {
+        gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
+        width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
+        speed: base
+      });
+      const topMin = 40;
+      const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
+      buddy.top = Math.min(topMax, Math.max(topMin, p.top + ri(-10, 10)));
+      pipes.current.push(buddy);
+    }
   }
-}
 
-function scheduleNextSpawn() {
-  const jitter = ri(SPAWN_JITTER[0], SPAWN_JITTER[1]);
-  nextSpawnAt.current += SPAWN_BASE + jitter;
-}
-
+  function scheduleNextSpawn() {
+    const jitter = ri(SPAWN_JITTER[0], SPAWN_JITTER[1]);
+    nextSpawnAt.current += SPAWN_BASE + jitter;
+  }
 
   /* ---------- API helpers ---------- */
   async function sendScore(username: string, s: number) {
@@ -266,8 +287,11 @@ function scheduleNextSpawn() {
       const data = (await r.json()) as LeaderRow[]; setLeader(data); } catch {}
   }
 
-  /* ---------- controls ---------- */
-  function startGame() {
+  /* ---------- controls (now gated by tx) ---------- */
+  async function startGame() {
+    const ok = await requestGameTx('play');
+    if (!ok) return;
+
     state.current = 'playing';
     setHint(`Fly, @${viewer.username}!`);
     pipes.current = []; score.current = 0; frames.current = 0;
@@ -277,7 +301,13 @@ function scheduleNextSpawn() {
     bird.current.r = Math.max(12, Math.round(W.current * 0.03));
     nextSpawnAt.current = frames.current + 55;
   }
-  function restartGame() { startGame(); }
+
+  async function restartGame() {
+    const ok = await requestGameTx('restart');
+    if (!ok) return;
+    await startGame();
+  }
+
   function endGame() {
     if (state.current !== 'playing') return;
     state.current = 'over';
@@ -344,20 +374,19 @@ class Pipe {
     gap?: number; width?: number; speed?: number; top?: number;
   }) {
     this.x = startX; this.H = H; this.ground = GROUND_H;
-    this.gap   = opts?.gap   ?? ri(130, 190);
-    this.width = opts?.width ?? ri(70, 110);
-    this.speed = opts?.speed ?? 2.4;
+    this.gap   = opts?.gap   ?? ri(170, 230);
+    this.width = opts?.width ?? ri(50, 80);
+    this.speed = opts?.speed ?? 2.2;
 
     const topMin = 40;
     const topMax = Math.max(topMin, H - GROUND_H - this.gap - 40);
     this.top = opts?.top ?? ri(topMin, topMax);
   }
 
-update(score: number) {
-  const scale = Math.min(1.5, 1 + score * 0.012); // gentler, cap at 1.5x
-  this.x -= this.speed * scale;
-}
-
+  update(score: number) {
+    const scale = Math.min(1.5, 1 + score * 0.012); // gentler ramp
+    this.x -= this.speed * scale;
+  }
 
   draw(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
