@@ -1,3 +1,4 @@
+// app/api/leaderboard/route.ts
 import { NextResponse } from 'next/server';
 
 export async function GET() {
@@ -12,16 +13,18 @@ export async function GET() {
       token: process.env.REDIS_TOKEN,
     });
 
-    const flat = (await redis.zrevrange('leaderboard', {
+    // Use zrange + rev:true instead of zrevrange (works across versions)
+    const flat = (await redis.zrange('leaderboard', {
       start: 0,
       stop: 9,
+      rev: true,
       withScores: true,
-    })) as [string, number][];
+    })) as (string | number)[];
 
-    const out = flat.map(([username, score]) => ({
-      username,
-      score: Number(score),
-    }));
+    const out: { username: string; score: number }[] = [];
+    for (let i = 0; i < flat.length; i += 2) {
+      out.push({ username: String(flat[i]), score: Number(flat[i + 1]) });
+    }
 
     return NextResponse.json(out);
   } catch (e) {
