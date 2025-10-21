@@ -36,16 +36,20 @@ export default function Page() {
   const GROUND_H = useRef(60);
   const ASPECT = 9 / 16; // portrait width/height
 
-  // Difficulty knobs
-  const GAP_RANGE: [number, number] = [130, 190];
-  const WIDTH_RANGE: [number, number] = [70, 110];
-  const SPEED_BASE = 2.4;
-  const SPEED_JITTER: [number, number] = [-0.15, 0.25];
-  const SPAWN_BASE = 85;
-  const SPAWN_JITTER: [number, number] = [0, 25];
-  const CLUSTER_PROB = 0.35;
-  const CLUSTER_OFFSET: [number, number] = [95, 150];
-  const VERTICAL_DRIFT = 40;
+// Difficulty knobs (balanced/fair)
+const GAP_RANGE: [number, number] = [170, 230];      // wider openings
+const WIDTH_RANGE: [number, number] = [50, 80];      // slimmer pipes
+const SPEED_BASE = 2.2;                               // a bit slower
+const SPEED_JITTER: [number, number] = [-0.1, 0.2];
+const SPAWN_BASE = 110;                               // more spacing
+const SPAWN_JITTER: [number, number] = [0, 30];
+const CLUSTER_PROB = 0.25;                            // fewer pairs
+const CLUSTER_OFFSET: [number, number] = [140, 210];  // wider pair spacing
+const VERTICAL_DRIFT = 25;                            // gentler wander
+
+// Keep a guaranteed horizontal space between consecutive pipes:
+const MIN_H_SPACING = 100; // px
+
 
   // Bird physics
   const GRAVITY = 0.17;
@@ -201,44 +205,57 @@ export default function Page() {
   }, []);
 
   /* ---------- spawning ---------- */
-  function spawnPipe(startX = W.current) {
-    const _H = H.current, _G = GROUND_H.current;
+function spawnPipe(startX = W.current) {
+  const _H = H.current, _G = GROUND_H.current;
 
-    const base = SPEED_BASE + rf(SPEED_JITTER[0], SPEED_JITTER[1]);
-    const p = new Pipe(startX, _H, _G, {
+  // Enforce spacing vs the last pipe on screen
+  const last = pipes.current[pipes.current.length - 1];
+  if (last) {
+    const minAllowedX = last.x + last.width + MIN_H_SPACING;
+    if (startX < minAllowedX) startX = minAllowedX;
+  }
+
+  const base = SPEED_BASE + rf(SPEED_JITTER[0], SPEED_JITTER[1]);
+  const p = new Pipe(startX, _H, _G, {
+    gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
+    width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
+    speed: base
+  });
+
+  // Small vertical drift vs previous pipe (within limits)
+  if (last) {
+    const drift = ri(-VERTICAL_DRIFT, VERTICAL_DRIFT);
+    const topMin = 40;
+    const topMax = Math.max(topMin, _H - _G - p.gap - 40);
+    p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
+  }
+  pipes.current.push(p);
+
+  // Optional close buddy — but still honor spacing
+  if (Math.random() < CLUSTER_PROB) {
+    let buddyX = startX + ri(CLUSTER_OFFSET[0], CLUSTER_OFFSET[1]);
+    // ensure buddy isn’t overlapping this pipe
+    const minBuddyX = p.x + p.width + MIN_H_SPACING;
+    if (buddyX < minBuddyX) buddyX = minBuddyX;
+
+    const buddy = new Pipe(buddyX, _H, _G, {
       gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
       width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
       speed: base
     });
 
-    const last = pipes.current.length ? pipes.current[pipes.current.length - 1] : null;
-    if (last) {
-      const drift = ri(-VERTICAL_DRIFT, VERTICAL_DRIFT);
-      const topMin = 40;
-      const topMax = Math.max(topMin, _H - _G - p.gap - 40);
-      p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
-    }
-    pipes.current.push(p);
-
-    // close buddy
-    if (Math.random() < CLUSTER_PROB) {
-      const buddyX = startX + ri(CLUSTER_OFFSET[0], CLUSTER_OFFSET[1]);
-      const buddy = new Pipe(buddyX, _H, _G, {
-        gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
-        width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
-        speed: base
-      });
-      const topMin = 40;
-      const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
-      buddy.top = Math.min(topMax, Math.max(topMin, p.top + ri(-12, 12)));
-      pipes.current.push(buddy);
-    }
+    const topMin = 40;
+    const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
+    buddy.top = Math.min(topMax, Math.max(topMin, p.top + ri(-10, 10)));
+    pipes.current.push(buddy);
   }
+}
 
-  function scheduleNextSpawn() {
-    const jitter = ri(SPAWN_JITTER[0], SPAWN_JITTER[1]);
-    nextSpawnAt.current += SPAWN_BASE + jitter;
-  }
+function scheduleNextSpawn() {
+  const jitter = ri(SPAWN_JITTER[0], SPAWN_JITTER[1]);
+  nextSpawnAt.current += SPAWN_BASE + jitter;
+}
+
 
   /* ---------- API helpers ---------- */
   async function sendScore(username: string, s: number) {
@@ -336,10 +353,11 @@ class Pipe {
     this.top = opts?.top ?? ri(topMin, topMax);
   }
 
-  update(score: number) {
-    const scale = Math.min(1.8, 1 + score * 0.018); // ramp difficulty
-    this.x -= this.speed * scale;
-  }
+update(score: number) {
+  const scale = Math.min(1.5, 1 + score * 0.012); // gentler, cap at 1.5x
+  this.x -= this.speed * scale;
+}
+
 
   draw(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
