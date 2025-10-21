@@ -1,15 +1,9 @@
-import { getFarcasterManifest } from "@/lib/warpcast";
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
+import minikitConfig from '../../../minikit.config';
 
 export async function GET() {
-  try {
-    const manifest = await getFarcasterManifest();
-    return NextResponse.json(manifest);
-  } catch (error) {
-    console.error("Error generating manifest:", error);
-    return NextResponse.json(
-      { error: (error as Error).message },
-      { status: 500 }
-    );
-  }
+  return NextResponse.json({
+    accountAssociation: minikitConfig.accountAssociation,
+    miniapp: minikitConfig.miniapp
+  });
 }
