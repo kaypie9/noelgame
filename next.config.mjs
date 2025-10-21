@@ -1,11 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  transpilePackages: [
-    '@coinbase/onchainkit',
-    'wagmi',
-    'viem',
-    '@walletconnect/modal',
-  ],
+  transpilePackages: ['@coinbase/onchainkit', 'wagmi', 'viem'],
 };
 export default nextConfig;
