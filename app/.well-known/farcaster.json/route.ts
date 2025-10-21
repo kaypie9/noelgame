@@ -33,7 +33,7 @@ export async function GET() {
       splashBackgroundColor: '#000000',
       homeUrl: ROOT,
       webhookUrl: `${ROOT}/api/webhook`,
-      primaryCategory: 'game',
+      primaryCategory: 'games',
       tags: ['game', 'arcade'],
       heroImageUrl: `${ROOT}/splash.png`,
       tagline: 'dodge the pipes',

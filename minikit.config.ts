@@ -17,7 +17,7 @@ export const minikitConfig = {
     splashBackgroundColor: '#000000',
     homeUrl: ROOT,                // game home (your /)
     webhookUrl: `${ROOT}/api/webhook`, // keep for later or remove if unused
-    primaryCategory: 'game',
+    primaryCategory: 'games',
     tags: ['game', 'arcade'],
     heroImageUrl: `${ROOT}/splash.png`,
     tagline: 'dodge the pipes',
