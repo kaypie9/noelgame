@@ -1,25 +1,28 @@
 'use client';
 
-import { OnchainKitProvider } from '@coinbase/onchainkit';
+import { ReactNode, useMemo } from 'react';
+import { WagmiProvider, createConfig, http } from 'wagmi';
 import { base } from 'wagmi/chains';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector';
 
-export default function Providers({ children }: { children: React.ReactNode }) {
+export default function Providers({ children }: { children: ReactNode }) {
+  const queryClient = useMemo(() => new QueryClient(), []);
+
+  const wagmiConfig = useMemo(
+    () =>
+      createConfig({
+        chains: [base],
+        transports: { [base.id]: http() }, // replace with your own RPC if you want
+        connectors: [farcasterMiniApp()],
+        ssr: false, // IMPORTANT for Next app router
+      }),
+    []
+  );
+
   return (
-    <OnchainKitProvider
-      apiKey={process.env.NEXT_PUBLIC_ONCHAINKIT_API_KEY || ''} // required
-      chain={base}
-      miniKit={{ enabled: true }} // enable Mini App integration
-      // optional branding:
-      // config={{
-      //   appearance: {
-      //     mode: 'auto',
-      //     theme: 'default',
-      //     name: process.env.NEXT_PUBLIC_ONCHAINKIT_PROJECT_NAME,
-      //     logo: process.env.NEXT_PUBLIC_ICON_URL,
-      //   },
-      // }}
-    >
-      {children}
-    </OnchainKitProvider>
+    <QueryClientProvider client={queryClient}>
+      <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
+    </QueryClientProvider>
   );
 }

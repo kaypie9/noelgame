@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
+import ConnectWallet from '@/components/ConnectWallet';
 
 /* ----------------- utils ----------------- */
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
@@ -33,16 +34,16 @@ export default function Page() {
   const W = useRef(640);
   const H = useRef(480);
   const GROUND_H = useRef(60);
-  const ASPECT = 9 / 16; // mobile-first portrait aspect (width/height); canvas fills width, we cap height
+  const ASPECT = 9 / 16; // portrait width/height
 
-  // Difficulty knobs (harder)
-  const GAP_RANGE: [number, number] = [130, 190];      // tighter openings
-  const WIDTH_RANGE: [number, number] = [70, 110];     // chunkier pipes
-  const SPEED_BASE = 2.4;                               // faster base
+  // Difficulty knobs
+  const GAP_RANGE: [number, number] = [130, 190];
+  const WIDTH_RANGE: [number, number] = [70, 110];
+  const SPEED_BASE = 2.4;
   const SPEED_JITTER: [number, number] = [-0.15, 0.25];
-  const SPAWN_BASE = 85;                                // more frequent
+  const SPAWN_BASE = 85;
   const SPAWN_JITTER: [number, number] = [0, 25];
-  const CLUSTER_PROB = 0.35;                            // frequent close pairs
+  const CLUSTER_PROB = 0.35;
   const CLUSTER_OFFSET: [number, number] = [95, 150];
   const VERTICAL_DRIFT = 40;
 
@@ -81,17 +82,12 @@ export default function Page() {
 
     function resize() {
       const wrap = wrapperRef.current || document.body;
-
-      // Fill width; height constrained by viewport
       const maxW = Math.max(1, Math.floor(wrap.clientWidth));
       let w = maxW;
       let h = Math.floor(w / ASPECT);
 
       const maxH = Math.floor(window.innerHeight);
-      if (h > maxH) {
-        h = maxH;
-        w = Math.floor(h * ASPECT);
-      }
+      if (h > maxH) { h = maxH; w = Math.floor(h * ASPECT); }
 
       const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
       canvas.style.width = w + 'px';
@@ -101,17 +97,16 @@ export default function Page() {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       const prevW = W.current, prevH = H.current;
-      W.current = w;
-      H.current = h;
+      W.current = w; H.current = h;
       GROUND_H.current = Math.max(48, Math.round(h * 0.12));
 
-      // Scale bird roughly to new space
+      // scale bird
       const sx = w / prevW, sy = h / prevH;
       bird.current.x *= sx;
       bird.current.y *= sy;
       bird.current.r = Math.max(12, Math.round(w * 0.03));
 
-      // Update pipes world height/ground
+      // update pipes world height/ground
       for (const p of pipes.current) { p.H = H.current; p.ground = GROUND_H.current; }
     }
 
@@ -149,28 +144,23 @@ export default function Page() {
         const _H = H.current, _G = GROUND_H.current, _W = W.current;
 
         // physics
-        b.v += GRAVITY;
-        b.v *= 0.995;
+        b.v += GRAVITY; b.v *= 0.995;
         if (b.v > MAX_DOWN) b.v = MAX_DOWN;
         if (b.v < MAX_UP) b.v = MAX_UP;
         b.y += b.v;
 
         // spawn
-        if (frames.current >= nextSpawnAt.current) {
-          spawnPipe(_W);
-          scheduleNextSpawn();
-        }
+        if (frames.current >= nextSpawnAt.current) { spawnPipe(_W); scheduleNextSpawn(); }
 
         // pipes
         for (let i = pipes.current.length - 1; i >= 0; i--) {
           const p = pipes.current[i];
-          p.update(score.current); // 💥 speed scales with score
+          p.update(score.current);
           p.draw(ctx);
 
           if (!p.scored && b.x > p.x + p.width) {
             p.scored = true;
-            score.current++;
-            setScoreText(String(score.current));
+            score.current++; setScoreText(String(score.current));
           }
           if (p.x + p.width < 0) { pipes.current.splice(i, 1); continue; }
           if (safeFrames.current <= 0 && p.collidesWith(b)) endGame();
@@ -195,7 +185,9 @@ export default function Page() {
       flapCd.current = FLAP_CD;
     }
     const onClick = () => flap();
-    const onKey = (e: KeyboardEvent) => { if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); } };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
+    };
 
     canvas.addEventListener('click', onClick);
     document.addEventListener('keydown', onKey);
@@ -250,32 +242,23 @@ export default function Page() {
 
   /* ---------- API helpers ---------- */
   async function sendScore(username: string, s: number) {
-    try {
-      await fetch('/api/score', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, score: s }) });
-    } catch {}
+    try { await fetch('/api/score', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, score: s }) }); } catch {}
   }
   async function loadLeaderboard() {
-    try {
-      const r = await fetch('/api/leaderboard'); if (!r.ok) return;
-      const data = (await r.json()) as LeaderRow[]; setLeader(data);
-    } catch {}
+    try { const r = await fetch('/api/leaderboard'); if (!r.ok) return;
+      const data = (await r.json()) as LeaderRow[]; setLeader(data); } catch {}
   }
 
   /* ---------- controls ---------- */
   function startGame() {
     state.current = 'playing';
     setHint(`Fly, @${viewer.username}!`);
-    pipes.current = [];
-    score.current = 0;
-    frames.current = 0;
-    safeFrames.current = 90;
-    flapCd.current = 0;
-    setScoreText('0');
+    pipes.current = []; score.current = 0; frames.current = 0;
+    safeFrames.current = 90; flapCd.current = 0; setScoreText('0');
     bird.current.x = Math.round(W.current * 0.18);
-    bird.current.y = H.current * 0.4;
-    bird.current.v = 0;
+    bird.current.y = H.current * 0.4; bird.current.v = 0;
     bird.current.r = Math.max(12, Math.round(W.current * 0.03));
-    nextSpawnAt.current = frames.current + 55; // quicker first spawn
+    nextSpawnAt.current = frames.current + 55;
   }
   function restartGame() { startGame(); }
   function endGame() {
@@ -287,7 +270,7 @@ export default function Page() {
 
   useEffect(() => { void loadLeaderboard(); }, []);
 
-  /* ---------- UI (overlays on top of canvas) ---------- */
+  /* ---------- UI (overlays) ---------- */
   return (
     <div
       ref={wrapperRef}
@@ -302,10 +285,13 @@ export default function Page() {
       {/* Canvas fills frame */}
       <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
 
-      {/* Top-left controls */}
-      <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8 }}>
+      {/* Top-left controls + Connect */}
+      <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
         <button onClick={startGame} style={btn}>Play</button>
         <button onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }}>Restart</button>
+        <div style={{ marginLeft: 8 }}>
+          <ConnectWallet />
+        </div>
       </div>
 
       {/* Top-right score */}
@@ -340,9 +326,7 @@ class Pipe {
   constructor(startX: number, H: number, GROUND_H: number, opts?: {
     gap?: number; width?: number; speed?: number; top?: number;
   }) {
-    this.x = startX;
-    this.H = H;
-    this.ground = GROUND_H;
+    this.x = startX; this.H = H; this.ground = GROUND_H;
     this.gap   = opts?.gap   ?? ri(130, 190);
     this.width = opts?.width ?? ri(70, 110);
     this.speed = opts?.speed ?? 2.4;
@@ -352,18 +336,15 @@ class Pipe {
     this.top = opts?.top ?? ri(topMin, topMax);
   }
 
-  // speed scales a bit with score for increasing difficulty
   update(score: number) {
-    const scale = Math.min(1.8, 1 + score * 0.018); // up to ~1.8x
+    const scale = Math.min(1.8, 1 + score * 0.018); // ramp difficulty
     this.x -= this.speed * scale;
   }
 
   draw(ctx: CanvasRenderingContext2D) {
     ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
-    // top
     ctx.fillRect(this.x, 0, this.width, this.top);
     ctx.strokeRect(this.x, 0, this.width, this.top);
-    // bottom
     const bottomY = this.top + this.gap;
     const bottomH = this.H - this.ground - bottomY;
     ctx.fillRect(this.x, bottomY, this.width, bottomH);
@@ -372,8 +353,7 @@ class Pipe {
 
   collidesWith(b: { x: number; y: number; r: number }) {
     if (b.x + b.r > this.x && b.x - b.r < this.x + this.width) {
-      const gapTop = this.top;
-      const gapBot = this.top + this.gap;
+      const gapTop = this.top, gapBot = this.top + this.gap;
       if (b.y - b.r < gapTop || b.y + b.r > gapBot) return true;
     }
     return false;
