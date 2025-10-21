@@ -1,21 +1,31 @@
 import { NextResponse } from 'next/server';
-import { Redis } from '@upstash/redis';
-
-const redis = new Redis({
-  url: process.env.REDIS_URL!,
-  token: process.env.REDIS_TOKEN!
-});
 
 export async function GET() {
   try {
-    // returns a flat array like [member, score, member, score]
-    const flat = await redis.zrevrange('leaderboard', 0, 9, { withScores: true }) as any[];
-    const out: { username: string; score: number }[] = [];
-    for (let i = 0; i < flat.length; i += 2) {
-      out.push({ username: String(flat[i]), score: Number(flat[i + 1]) });
+    if (!process.env.REDIS_URL || !process.env.REDIS_TOKEN) {
+      return NextResponse.json([]);
     }
+
+    const { Redis } = await import('@upstash/redis');
+    const redis = new Redis({
+      url: process.env.REDIS_URL,
+      token: process.env.REDIS_TOKEN,
+    });
+
+    const flat = (await redis.zrevrange('leaderboard', {
+      start: 0,
+      stop: 9,
+      withScores: true,
+    })) as [string, number][];
+
+    const out = flat.map(([username, score]) => ({
+      username,
+      score: Number(score),
+    }));
+
     return NextResponse.json(out);
-  } catch {
+  } catch (e) {
+    console.error('leaderboard error', e);
     return NextResponse.json([]);
   }
 }
