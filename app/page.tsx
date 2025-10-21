@@ -3,274 +3,246 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 
+type LeaderRow = { username: string; score: number };
+
 export default function Page() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [scoreText, setScoreText] = useState('0');
-  const [showStart, setShowStart] = useState(true);
-  const [showOver, setShowOver] = useState(false);
 
+  // ui
+  const [scoreText, setScoreText] = useState('0');
+  const [hint, setHint] = useState('tap Play, then Space or click to flap');
+  const [leader, setLeader] = useState<LeaderRow[]>([]);
+  const [viewer, setViewer] = useState<{ username: string; fid?: number }>({ username: 'guest' });
+
+  // game refs
+  const state = useRef<'start' | 'playing' | 'over'>('start');
+  const score = useRef(0);
+  const frames = useRef(0);
+  const safeFrames = useRef(0);
+  const pipes = useRef<Pipe[]>([]);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+
+  // constants
+  const W = 640, H = 480, GROUND_H = 60;
+  const GAP_MIN = 260, GAP_MAX = 320; // random pipe gap range
+  const SPEED = 1.9;
+
+  // tuned physics
+  const GRAVITY = 0.16;
+  const JUMP_IMPULSE = -6.0;
+  const MAX_UP = -9;
+  const MAX_DOWN = 8;
+  const FLAP_COOLDOWN = 10;
+
+  // bird
+  const bird = useRef({ x: 120, y: H * 0.4, v: 0, r: 26 });
+  const flapCd = useRef(0);
+
+  // ---- Mini App: announce ready + load user context ----
   useEffect(() => {
-    // tell Farcaster the UI is ready
+    // hide splash
     sdk.actions.ready();
+
+    // if we're in a Mini App, pull the viewer context (fid/username)
+    (async () => {
+      try {
+        const inMini = await sdk.isInMiniApp();
+        if (inMini) {
+          const ctx = await sdk.context; // has user: { fid, username, ... }
+          const u = ctx?.user;
+          if (u?.username) setViewer({ username: u.username, fid: u.fid });
+        }
+      } catch (e) {
+        // non-fatal; stick with "guest"
+        console.warn('context read failed', e);
+      }
+    })();
   }, []);
 
+  // ---- Canvas + game loop ----
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
+    ctxRef.current = ctx;
 
-    // crisp canvas on high DPI
     const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-    const W = 640;
-    const H = 480;
     canvas.width = W * dpr;
     canvas.height = H * dpr;
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
     ctx.scale(dpr, dpr);
 
-    // game state
-    let gameState: 'start' | 'playing' | 'over' = 'start';
-    let score = 0;
-    let frames = 0;
-    let pipeGap = 350;
-    const USERNAME = 'noel34';
+    function drawBG() {
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, '#6ea0ff'); g.addColorStop(1, '#7b57c7');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
-    const bird = {
-      x: 100,
-      y: 320,
-      velocity: 0,
-      radius: 30,
-      update() {
-        if (gameState !== 'playing') return;
-        this.velocity += 0.15;
-        this.velocity *= 0.99;
-        if (this.velocity > 8) this.velocity = 8;
-        if (this.velocity < -10) this.velocity = -10;
-        this.y += this.velocity;
-        if (this.y > H - 50 - this.radius) endGame();
-        if (this.y < 0) this.y = 0;
-      },
-      jump() {
-        if (gameState === 'playing') this.velocity = -8;
-      },
-      draw() {
-        ctx.fillStyle = '#FFD700';
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
-        ctx.fill();
+      // ground band + top line
+      ctx.fillStyle = '#45308b';
+      ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+      ctx.strokeStyle = '#2e1f63'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(0, H - GROUND_H); ctx.lineTo(W, H - GROUND_H); ctx.stroke();
+    }
 
-        ctx.fillStyle = 'white';
-        ctx.beginPath();
-        ctx.arc(this.x + 8, this.y - 5, 6, 0, Math.PI * 2);
-        ctx.fill();
+    function drawBird() {
+      const b = bird.current;
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(b.x + 8, b.y - 5, 6, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(b.x + 10, b.y - 5, 3, 0, Math.PI * 2); ctx.fill();
+    }
 
-        ctx.fillStyle = 'black';
-        ctx.beginPath();
-        ctx.arc(this.x + 10, this.y - 5, 3, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    };
+    function step() {
+      frames.current++;
+      if (safeFrames.current > 0) safeFrames.current--;
+      if (flapCd.current > 0) flapCd.current--;
 
-    class Pipe {
-      x: number;
-      width: number;
-      gap: number;
-      topHeight: number;
-      scored: boolean;
-      constructor() {
-        this.x = W;
-        this.width = 60;
-        this.gap = pipeGap;
-        this.topHeight = Math.random() * (H - this.gap - 200) + 50;
-        this.scored = false;
-      }
-      update() {
-        if (gameState !== 'playing') return;
-        this.x -= 1.2;
-      }
-      draw() {
-        ctx.fillStyle = '#9B59B6';
-        ctx.fillRect(this.x, 0, this.width, this.topHeight);
-        ctx.fillRect(this.x, this.topHeight + this.gap, this.width, H);
+      drawBG();
 
-        ctx.strokeStyle = '#8E44AD';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(this.x, 0, this.width, this.topHeight);
-        ctx.strokeRect(this.x, this.topHeight + this.gap, this.width, H);
-      }
-      collidesWith(b: typeof bird) {
-        if (b.x + b.radius > this.x && b.x - b.radius < this.x + this.width) {
-          if (b.y - b.radius < this.topHeight || b.y + b.radius > this.topHeight + this.gap) {
-            return true;
-          }
+      if (state.current === 'playing') {
+        const b = bird.current;
+
+        // physics
+        b.v += GRAVITY;
+        b.v *= 0.995;
+        if (b.v > MAX_DOWN) b.v = MAX_DOWN;
+        if (b.v < MAX_UP) b.v = MAX_UP;
+        b.y += b.v;
+
+        // spawn pipes after a short delay, then regularly
+        if (frames.current > 60 && frames.current % 120 === 0) {
+          pipes.current.push(new Pipe(W, H, GROUND_H, GAP_MIN, GAP_MAX, SPEED));
         }
-        return false;
-      }
-    }
 
-    const pipes: Pipe[] = [];
-
-    function updateDifficulty() {
-      if (score <= 15) {
-        pipeGap = Math.floor(350 / (1 + (score / 15) * 0.3));
-      } else {
-        const multiplier = 1.3 + ((score - 15) / 50) * 0.5;
-        pipeGap = Math.floor(350 / Math.min(multiplier, 2));
-      }
-    }
-
-    function drawBackground() {
-      const gradient = ctx.createLinearGradient(0, 0, 0, H);
-      gradient.addColorStop(0, '#667eea');
-      gradient.addColorStop(1, '#764ba2');
-      ctx.fillStyle = gradient;
-      ctx.fillRect(0, 0, W, H);
-
-      ctx.fillStyle = '#553c9a';
-      ctx.fillRect(0, H - 50, W, 50);
-    }
-
-    async function sendScore(username: string, scoreVal: number) {
-      try {
-        const res = await fetch('/api/score', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, score: scoreVal })
-        });
-        // ignore body to avoid JSON errors if route not set yet
-        if (!res.ok) throw new Error('score not accepted');
-      } catch (e) {
-        console.error('sendScore failed', e);
-      }
-    }
-
-    async function fetchLeaderboard() {
-      try {
-        const res = await fetch('/api/leaderboard');
-        if (!res.ok) throw new Error('leaderboard not available');
-        const leaderboard = await res.json();
-        // you can render this into the DOM if you add a list, for now we log
-        console.log('leaderboard', leaderboard);
-      } catch (e) {
-        console.error('leaderboard load failed', e);
-      }
-    }
-
-    function endGame() {
-      if (gameState !== 'playing') return;
-      gameState = 'over';
-      setShowOver(true);
-      void sendScore(USERNAME, score).then(fetchLeaderboard);
-    }
-
-    function startGame() {
-      gameState = 'playing';
-      setShowStart(false);
-      setShowOver(false);
-      bird.y = 120;
-      bird.velocity = 0;
-      pipes.length = 0;
-      score = 0;
-      frames = 0;
-      pipeGap = 350;
-      setScoreText('0');
-    }
-
-    function loop() {
-      frames++;
-      drawBackground();
-
-      if (gameState === 'playing') {
-        updateDifficulty();
-        bird.update();
-
-        if (frames % 150 === 0) pipes.push(new Pipe());
-
-        for (let i = pipes.length - 1; i >= 0; i--) {
-          const p = pipes[i];
+        // pipes + scoring + collisions
+        for (let i = pipes.current.length - 1; i >= 0; i--) {
+          const p = pipes.current[i];
           p.update();
-          p.draw();
-
-          if (p.collidesWith(bird)) endGame();
-
-          if (!p.scored && bird.x > p.x + p.width) {
+          p.draw(ctx);
+          if (safeFrames.current <= 0 && p.collidesWith(b)) endGame();
+          if (!p.scored && b.x > p.x + p.width) {
             p.scored = true;
-            score++;
-            setScoreText(String(score));
+            score.current++;
+            setScoreText(String(score.current));
           }
-
-          if (p.x + p.width < 0) pipes.splice(i, 1);
+          if (p.x + p.width < 0) pipes.current.splice(i, 1);
         }
+
+        // ceiling
+        if (b.y - b.r <= 0 && safeFrames.current <= 0) endGame();
+
+        // ground
+        const groundY = H - GROUND_H - b.r;
+        if (b.y > groundY && safeFrames.current <= 0) endGame();
       } else {
-        pipes.forEach((p) => p.draw());
+        pipes.current.forEach(p => p.draw(ctx));
       }
 
-      bird.draw();
-      requestAnimationFrame(loop);
+      drawBird();
+
+      requestAnimationFrame(step);
     }
 
-    function onCanvasClick() {
-      bird.jump();
+    function flap() {
+      if (state.current !== 'playing') return;
+      if (flapCd.current > 0) return;
+      bird.current.v = JUMP_IMPULSE;
+      flapCd.current = FLAP_COOLDOWN;
     }
 
-    canvas.addEventListener('click', onCanvasClick);
-    loop();
+    function onClick() { flap(); }
+    function onKey(e: KeyboardEvent) {
+      if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
+    }
+
+    canvas.addEventListener('click', onClick);
+    document.addEventListener('keydown', onKey);
+    step();
 
     return () => {
-      canvas.removeEventListener('click', onCanvasClick);
+      canvas.removeEventListener('click', onClick);
+      document.removeEventListener('keydown', onKey);
     };
   }, []);
+
+  // ---- Simple API helpers (optional; no-op if routes/env not set) ----
+  async function sendScore(username: string, s: number) {
+    try {
+      await fetch('/api/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, score: s })
+      });
+    } catch {/* ignore in dev */}
+  }
+  async function loadLeaderboard() {
+    try {
+      const r = await fetch('/api/leaderboard');
+      if (!r.ok) return;
+      const data = (await r.json()) as LeaderRow[];
+      setLeader(data);
+    } catch {/* ignore in dev */}
+  }
+
+  // ---- Game control ----
+  function startGame() {
+    state.current = 'playing';
+    setHint(`fly, @${viewer.username}!`);
+    pipes.current = [];
+    score.current = 0;
+    frames.current = 0;
+    safeFrames.current = 90;        // ~1.5s grace period
+    flapCd.current = 0;
+    setScoreText('0');
+    bird.current.y = H * 0.4;
+    bird.current.v = 0;
+  }
+
+  function restartGame() { startGame(); }
+
+  function endGame() {
+    if (state.current !== 'playing') return;
+    state.current = 'over';
+    setHint('game over. press Restart');
+    // store + refresh board (if APIs exist)
+    void sendScore(viewer.username, score.current).then(loadLeaderboard);
+  }
+
+  // first paint: try to load board (safe to ignore errors)
+  useEffect(() => { void loadLeaderboard(); }, []);
 
   return (
     <div style={{ display: 'grid', placeItems: 'center', minHeight: '100dvh', padding: 16 }}>
       <div style={{ width: '100%', maxWidth: 640 }}>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-          <div>
-            <button onClick={() => { /* start handled in effect via set states */ }} style={btnStyle} id="playBtn" />
-            <button onClick={() => { /* restart handled below */ }} style={{ ...btnStyle, background: '#2a1f3b' }} id="restartBtn" />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+          <button type="button" onClick={startGame} style={btn}>Play</button>
+          <button type="button" onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }}>Restart</button>
+          <div style={{ fontWeight: 700, marginLeft: 'auto' }}>
+            {scoreText}
           </div>
-          <div style={{ fontWeight: 700 }} id="score">{scoreText}</div>
         </div>
 
-        <canvas ref={canvasRef} id="canvas" />
+        <canvas ref={canvasRef} />
 
-        {showStart && (
-          <div style={{ color: '#b8a7d9', fontSize: 12 }} id="start">Tap Play to start</div>
-        )}
-        {showOver && (
-          <div style={{ color: '#b8a7d9', fontSize: 12 }} id="over">
-            <span id="final">Game over</span>
+        <div style={{ color: '#b8a7d9', fontSize: 12, marginTop: 8 }}>{hint}</div>
+
+        {/* Leaderboard (renders only if API returns data) */}
+        {leader.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <h4 style={{ margin: '8px 0' }}>Leaderboard</h4>
+            <ol style={{ margin: 0, paddingLeft: 18 }}>
+              {leader.map((row, i) => (
+                <li key={row.username + i}>{i + 1}. {row.username} — {row.score}</li>
+              ))}
+            </ol>
           </div>
         )}
-
-        <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-          <button
-            style={btnStyle}
-            onClick={() => {
-              // trigger a start by toggling state then letting startGame run in effect land
-              // simpler approach is to call a startGame ref
-              // for this minimal page we reload the component to reset state
-              window.location.reload();
-            }}
-          >
-            Play
-          </button>
-          <button
-            style={{ ...btnStyle, background: '#2a1f3b' }}
-            onClick={() => window.location.reload()}
-          >
-            Restart
-          </button>
-          <span style={{ color: '#b8a7d9', fontSize: 12, marginLeft: 8 }}>
-            Score {scoreText}
-          </span>
-        </div>
       </div>
     </div>
   );
 }
 
-const btnStyle: React.CSSProperties = {
+const btn: React.CSSProperties = {
   background: '#8e44ad',
   color: '#fff',
   border: 'none',
@@ -279,3 +251,47 @@ const btnStyle: React.CSSProperties = {
   fontWeight: 700,
   cursor: 'pointer'
 };
+
+// pipe with randomized height and gap
+class Pipe {
+  x: number; width: number; gap: number; top: number; speed: number; H: number; ground: number; scored = false;
+  constructor(W: number, H: number, GROUND_H: number, GAP_MIN: number, GAP_MAX: number, SPEED: number) {
+    this.x = W;
+    this.width = 70;
+    this.H = H;
+    this.ground = GROUND_H;
+    this.speed = SPEED;
+
+    this.gap = randInt(GAP_MIN, GAP_MAX);
+
+    const topMin = 40;
+    const topMax = H - GROUND_H - this.gap - 40;
+    this.top = randInt(topMin, topMax);
+  }
+  update() { this.x -= this.speed; }
+  draw(ctx: CanvasRenderingContext2D) {
+    ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
+
+    // top
+    ctx.fillRect(this.x, 0, this.width, this.top);
+    ctx.strokeRect(this.x, 0, this.width, this.top);
+
+    // bottom
+    const bottomY = this.top + this.gap;
+    const bottomH = this.H - this.ground - bottomY;
+    ctx.fillRect(this.x, bottomY, this.width, bottomH);
+    ctx.strokeRect(this.x, bottomY, this.width, bottomH);
+  }
+  collidesWith(b: { x: number; y: number; r: number }) {
+    if (b.x + b.r > this.x && b.x - b.r < this.x + this.width) {
+      const gapTop = this.top;
+      const gapBot = this.top + this.gap;
+      if (b.y - b.r < gapTop || b.y + b.r > gapBot) return true;
+    }
+    return false;
+  }
+}
+
+function randInt(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
