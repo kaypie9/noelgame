@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 
-// ===== helpers (module scope) =====
+// ===== helpers =====
 function randInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
@@ -16,7 +16,9 @@ type LeaderRow = { username: string; score: number };
 
 // ===== component =====
 export default function Page() {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
 
   // UI
   const [scoreText, setScoreText] = useState('0');
@@ -24,22 +26,24 @@ export default function Page() {
   const [leader, setLeader] = useState<LeaderRow[]>([]);
   const [viewer, setViewer] = useState<{ username: string; fid?: number }>({ username: 'guest' });
 
-  // Game refs
+  // Game state
   const state = useRef<'start' | 'playing' | 'over'>('start');
   const score = useRef(0);
   const frames = useRef(0);
   const safeFrames = useRef(0);
   const pipes = useRef<Pipe[]>([]);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const nextSpawnAt = useRef(60); // schedule (frames)
 
-  // Canvas constants
-  const W = 640, H = 480, GROUND_H = 60;
+  // Responsive canvas dims (update in resize())
+  const W = useRef(640);
+  const H = useRef(480);
+  const GROUND_H = useRef(60);
+  const ASPECT = 4 / 3; // width/height target
 
   // Pipe randomness (balanced)
-  const GAP_RANGE: [number, number] = [190, 260];     // opening height
-  const WIDTH_RANGE: [number, number] = [60, 80];     // pipe thickness
-  const SPEED_BASE = 2.0;                              // avg px/frame
+  const GAP_RANGE: [number, number] = [190, 260];      // opening height
+  const WIDTH_RANGE: [number, number] = [60, 80];      // pipe thickness
+  const SPEED_BASE = 2.0;                               // avg px/frame
   const SPEED_JITTER: [number, number] = [-0.2, 0.2];  // tiny variance
   const SPAWN_BASE = 110;                               // frames between spawns
   const SPAWN_JITTER: [number, number] = [0, 25];      // mild randomness
@@ -54,48 +58,93 @@ export default function Page() {
   const MAX_DOWN = 8;
   const FLAP_COOLDOWN = 10;
 
-  // Bird
-  const bird = useRef({ x: 120, y: H * 0.4, v: 0, r: 20 });
+  // Bird (radius will scale on resize a bit)
+  const bird = useRef({ x: 120, y: 480 * 0.4, v: 0, r: 20 });
   const flapCd = useRef(0);
 
   // Mini App context
-  useEffect(() => {
-    sdk.actions.ready();
-    (async () => {
-      try {
-        const inMini = await sdk.isInMiniApp();
-        if (inMini) {
-          const ctx = await sdk.context;
-          const u = ctx?.user;
-          if (u?.username) setViewer({ username: u.username, fid: u.fid });
-        }
-      } catch {}
-    })();
-  }, []);
+useEffect(() => {
+  sdk.actions.ready();
 
-  // Canvas + loop
+  // Title: only call if this SDK version supports it
+  try {
+    (sdk.actions as any)?.setTitle?.('Flappy Mini');
+  } catch {}
+  // always set the document title as a fallback
+  document.title = 'Flappy Mini';
+
+  (async () => {
+    try {
+      const inMini = await sdk.isInMiniApp();
+      if (inMini) {
+        const ctx = await sdk.context;
+        const u = ctx?.user;
+        if (u?.username) setViewer({ username: u.username, fid: u.fid });
+      }
+    } catch {}
+  })();
+}, []);
+
+
+  // Canvas + loop + resize
   useEffect(() => {
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext('2d')!;
     ctxRef.current = ctx;
 
-    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    canvas.style.width = W + 'px';
-    canvas.style.height = H + 'px';
-    ctx.scale(dpr, dpr);
+    function resize() {
+      // fit canvas to wrapper width, keep aspect, cap to viewport height
+      const wrap = wrapperRef.current || document.body;
+      const maxW = Math.max(1, Math.floor(wrap.clientWidth));
+      let w = Math.min(maxW, 900); // optional cap
+      let h = Math.floor(w / ASPECT);
+
+      const maxH = Math.floor(window.innerHeight);
+      if (h > maxH) {
+        h = maxH;
+        w = Math.floor(h * ASPECT);
+      }
+
+      const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // update logical world sizes
+      const prevW = W.current, prevH = H.current;
+      W.current = w;
+      H.current = h;
+      GROUND_H.current = Math.max(48, Math.round(h * 0.125)); // ~12.5% of height
+
+      // lightly scale bird position/radius to new space (best-effort)
+      const sx = w / prevW, sy = h / prevH;
+      bird.current.x *= sx;
+      bird.current.y *= sy;
+      bird.current.r = Math.max(12, Math.round(w * 0.03));
+
+      // update every pipe’s world H/ground (x/width stay in pixels)
+      for (const p of pipes.current) {
+        p.H = H.current;
+        p.ground = GROUND_H.current;
+      }
+    }
+
+    resize();
+    window.addEventListener('resize', resize);
 
     function drawBG() {
-      const g = ctx.createLinearGradient(0, 0, 0, H);
+      const _W = W.current, _H = H.current, _G = GROUND_H.current;
+      const g = ctx.createLinearGradient(0, 0, 0, _H);
       g.addColorStop(0, '#6ea0ff'); g.addColorStop(1, '#7b57c7');
-      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = g; ctx.fillRect(0, 0, _W, _H);
 
       // ground
       ctx.fillStyle = '#45308b';
-      ctx.fillRect(0, H - GROUND_H, W, GROUND_H);
+      ctx.fillRect(0, _H - _G, _W, _G);
       ctx.strokeStyle = '#2e1f63'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(0, H - GROUND_H); ctx.lineTo(W, H - GROUND_H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, _H - _G); ctx.lineTo(_W, _H - _G); ctx.stroke();
     }
 
     function drawBird() {
@@ -115,6 +164,7 @@ export default function Page() {
 
       if (state.current === 'playing') {
         const b = bird.current;
+        const _H = H.current, _G = GROUND_H.current, _W = W.current;
 
         // physics
         b.v += GRAVITY;
@@ -125,11 +175,11 @@ export default function Page() {
 
         // spawn (interval + jitter)
         if (frames.current >= nextSpawnAt.current) {
-          spawnPipe(W);
+          spawnPipe(_W);
           scheduleNextSpawn();
         }
 
-        // pipes update, collide, score by pass
+        // pipes update, collide, score
         for (let i = pipes.current.length - 1; i >= 0; i--) {
           const p = pipes.current[i];
           p.update();
@@ -151,7 +201,7 @@ export default function Page() {
         if (b.y - b.r <= 0 && safeFrames.current <= 0) endGame();
 
         // ground
-        const groundY = H - GROUND_H - b.r;
+        const groundY = _H - _G - b.r;
         if (b.y > groundY && safeFrames.current <= 0) endGame();
       } else {
         pipes.current.forEach(p => p.draw(ctx));
@@ -175,19 +225,21 @@ export default function Page() {
 
     canvas.addEventListener('click', onClick);
     document.addEventListener('keydown', onKey);
-    step();
 
+    step();
     return () => {
+      window.removeEventListener('resize', resize);
       canvas.removeEventListener('click', onClick);
       document.removeEventListener('keydown', onKey);
     };
   }, []);
 
-  // spawning helpers (moving mode)
-  function spawnPipe(startX = W) {
-    // base randomized pipe
+  // spawning helpers
+  function spawnPipe(startX = W.current) {
+    const _H = H.current, _G = GROUND_H.current;
+
     const speed = SPEED_BASE + randFloat(SPEED_JITTER[0], SPEED_JITTER[1]);
-    const p = new Pipe(startX, H, GROUND_H, {
+    const p = new Pipe(startX, _H, _G, {
       gap: randInt(GAP_RANGE[0], GAP_RANGE[1]),
       width: randInt(WIDTH_RANGE[0], WIDTH_RANGE[1]),
       speed
@@ -198,7 +250,7 @@ export default function Page() {
     if (last) {
       const drift = randInt(-VERTICAL_DRIFT, VERTICAL_DRIFT);
       const topMin = 40;
-      const topMax = Math.max(topMin, H - GROUND_H - p.gap - 40);
+      const topMax = Math.max(topMin, _H - _G - p.gap - 40);
       p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
     }
     pipes.current.push(p);
@@ -206,14 +258,13 @@ export default function Page() {
     // rare “close pair”
     if (Math.random() < CLUSTER_PROB) {
       const buddyX = startX + randInt(CLUSTER_OFFSET_PX[0], CLUSTER_OFFSET_PX[1]);
-      const buddy = new Pipe(buddyX, H, GROUND_H, {
+      const buddy = new Pipe(buddyX, _H, _G, {
         gap: randInt(GAP_RANGE[0], GAP_RANGE[1]),
         width: randInt(WIDTH_RANGE[0], WIDTH_RANGE[1]),
         speed
       });
-      // align buddy roughly with slight extra drift
       const topMin = 40;
-      const topMax = Math.max(topMin, H - GROUND_H - buddy.gap - 40);
+      const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
       buddy.top = Math.min(topMax, Math.max(topMin, p.top + randInt(-10, 10)));
       pipes.current.push(buddy);
     }
@@ -224,7 +275,7 @@ export default function Page() {
     nextSpawnAt.current += SPAWN_BASE + jitter;
   }
 
-  // Optional API helpers (safe if routes not set)
+  // API helpers (safe if routes not set)
   async function sendScore(username: string, s: number) {
     try {
       await fetch('/api/score', {
@@ -253,8 +304,10 @@ export default function Page() {
     safeFrames.current = 90;        // grace
     flapCd.current = 0;
     setScoreText('0');
-    bird.current.y = H * 0.4;
+    bird.current.x = Math.round(W.current * 0.18);
+    bird.current.y = H.current * 0.4;
     bird.current.v = 0;
+    bird.current.r = Math.max(12, Math.round(W.current * 0.03));
     nextSpawnAt.current = frames.current + 60; // first pipe ~1s in
   }
   function restartGame() { startGame(); }
@@ -268,9 +321,19 @@ export default function Page() {
   useEffect(() => { void loadLeaderboard(); }, []);
 
   return (
-    <div style={{ display: 'grid', placeItems: 'center', minHeight: '100dvh', padding: 16 }}>
-      <div style={{ width: '100%', maxWidth: 640 }}>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+    <div
+      ref={wrapperRef}
+      style={{
+        width: '100%',
+        height: '100dvh',
+        display: 'grid',
+        placeItems: 'center',
+        overflow: 'hidden',
+        padding: 0,
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: 900 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: 8 }}>
           <button type="button" onClick={startGame} style={btn}>Play</button>
           <button type="button" onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }}>Restart</button>
           <div style={{ fontWeight: 700, marginLeft: 'auto' }}>{scoreText}</div>
@@ -278,10 +341,10 @@ export default function Page() {
 
         <canvas ref={canvasRef} />
 
-        <div style={{ color: '#b8a7d9', fontSize: 12, marginTop: 8 }}>{hint}</div>
+        {hint && <div style={{ color: '#b8a7d9', fontSize: 12, padding: '6px 8px' }}>{hint}</div>}
 
         {leader.length > 0 && (
-          <div style={{ marginTop: 16 }}>
+          <div style={{ padding: '6px 8px' }}>
             <h4 style={{ margin: '8px 0' }}>Leaderboard</h4>
             <ol style={{ margin: 0, paddingLeft: 18 }}>
               {leader.map((row, i) => (
