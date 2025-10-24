@@ -1,386 +1,308 @@
-'use client';
+'use client'
 
-import { useEffect, useRef, useState } from 'react';
-import { sdk } from '@farcaster/miniapp-sdk';
-import ConnectWallet from '@/components/ConnectWallet';
+import { useEffect, useRef, useState } from 'react'
+import { sdk } from '@farcaster/miniapp-sdk'
+import ConnectWallet from '@/components/ConnectWallet'
+import { useAccount } from 'wagmi'
+import { parseEther } from 'viem'
 
-import { useAccount } from 'wagmi';
-import { parseEther } from 'viem';
+const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a
+const rf = (a: number, b: number) => Math.random() * (b - a) + a
+const COLORS = ['#FFD700', '#FF69B4', '#00FFFF', '#ADFF2F', '#FFA500']
 
-/* ----------------- utils ----------------- */
-const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
-const rf = (a: number, b: number) => Math.random() * (b - a) + a;
-
-type LeaderRow = { username: string; score: number };
-
-/* ----------------- page ----------------- */
 export default function Page() {
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
-  // UI
-  const [scoreText, setScoreText] = useState('0');
-  const [hint, setHint] = useState('Tap Play, then Space or tap to flap');
-  const [leader, setLeader] = useState<LeaderRow[]>([]);
-  const [viewer, setViewer] = useState<{ username: string; fid?: number }>({ username: 'guest' });
+  const [score, setScore] = useState(0)
+  const [hint, setHint] = useState('Press Play or Space to start')
+  const [countdown, setCountdown] = useState(0)
+  const [viewer, setViewer] = useState<{ username: string }>({ username: 'guest' })
+  const [paying, setPaying] = useState(false)
 
-  // Wallet
-  const { address, isConnected } = useAccount();
+  const { isConnected } = useAccount()
 
-  // Payment guard
-  const [paying, setPaying] = useState(false);
+  const state = useRef<'start' | 'countdown' | 'playing' | 'over'>('start')
+  const objects = useRef<{ x: number; y: number; size: number; color: string; speed: number; type: 'star' | 'rock' }[]>([])
+  const player = useRef({ x: 200, y: 420, w: 70, h: 20 })
+  const frames = useRef(0)
 
-  // Game state
-  const state = useRef<'start' | 'playing' | 'over'>('start');
-  const score = useRef(0);
-  const frames = useRef(0);
-  const safeFrames = useRef(0);
-  const pipes = useRef<Pipe[]>([]);
-  const nextSpawnAt = useRef(60);
+  const W = useRef(640)
+  const H = useRef(480)
 
-  // Responsive world
-  const W = useRef(640);
-  const H = useRef(480);
-  const GROUND_H = useRef(60);
-  const ASPECT = 9 / 16; // portrait width/height
+  const OBJECT_SPAWN_INTERVAL = 100
+  const BASE_SPEED = 0.4
+  const SPEED_INC = 0.01
 
-  // Difficulty knobs (balanced/fair)
-  const GAP_RANGE: [number, number] = [170, 230];
-  const WIDTH_RANGE: [number, number] = [50, 80];
-  const SPEED_BASE = 2.2;
-  const SPEED_JITTER: [number, number] = [-0.1, 0.2];
-  const SPAWN_BASE = 110;
-  const SPAWN_JITTER: [number, number] = [0, 30];
-  const CLUSTER_PROB = 0.25;
-  const CLUSTER_OFFSET: [number, number] = [140, 210];
-  const VERTICAL_DRIFT = 25;
-  const MIN_H_SPACING = 100;
-
-  // Bird physics
-  const GRAVITY = 0.17;
-  const JUMP = -5.8;
-  const MAX_UP = -9;
-  const MAX_DOWN = 8;
-  const FLAP_CD = 10;
-
-  const bird = useRef({ x: 120, y: 180, v: 0, r: 18 });
-  const flapCd = useRef(0);
-
-  /* ---------- Mini App context ---------- */
   useEffect(() => {
-    sdk.actions.ready();
-    try { (sdk.actions as any)?.setTitle?.('Flappy Mini'); } catch {}
-    document.title = 'Flappy Mini';
-    (async () => {
-      try {
-        const inMini = await sdk.isInMiniApp();
-        if (inMini) {
-          const ctx = await sdk.context;
-          const u = ctx?.user;
-          if (u?.username) setViewer({ username: u.username, fid: u.fid });
-        }
-      } catch {}
-    })();
-  }, []);
+    sdk.actions.ready()
+    document.title = 'Catch the Stars — Music Edition'
+    try {
+      ;(sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition')
+    } catch {}
+  }, [])
 
-  /* ---------- Canvas, loop, resize ---------- */
   useEffect(() => {
-    const canvas = canvasRef.current!;
-    const ctx = canvas.getContext('2d')!;
-    ctxRef.current = ctx;
+    const canvas = canvasRef.current!
+    const ctx = canvas.getContext('2d')!
+    ctxRef.current = ctx
+
+    const audio = new Audio(
+      'https://cdn.pixabay.com/download/audio/2022/03/15/audio_74c715d9cf.mp3?filename=peaceful-ambient-11157.mp3'
+    )
+    audio.loop = true
+    audio.volume = 0.3
+    audioRef.current = audio
 
     function resize() {
-      const wrap = wrapperRef.current || document.body;
-      const maxW = Math.max(1, Math.floor(wrap.clientWidth));
-      let w = maxW;
-      let h = Math.floor(w / ASPECT);
-
-      const maxH = Math.floor(window.innerHeight);
-      if (h > maxH) { h = maxH; w = Math.floor(h * ASPECT); }
-
-      const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
-      canvas.style.width = w + 'px';
-      canvas.style.height = h + 'px';
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      const prevW = W.current, prevH = H.current;
-      W.current = w; H.current = h;
-      GROUND_H.current = Math.max(48, Math.round(h * 0.12));
-
-      // scale bird
-      const sx = w / prevW, sy = h / prevH;
-      bird.current.x *= sx;
-      bird.current.y *= sy;
-      bird.current.r = Math.max(12, Math.round(w * 0.03));
-
-      // update pipes world height/ground
-      for (const p of pipes.current) { p.H = H.current; p.ground = GROUND_H.current; }
+      const wrap = wrapperRef.current || document.body
+      const w = wrap.clientWidth
+      const h = Math.floor(w / (9 / 16))
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = w * dpr
+      canvas.height = h * dpr
+      canvas.style.width = w + 'px'
+      canvas.style.height = h + 'px'
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      W.current = w
+      H.current = h
+      player.current.y = H.current - 40
     }
 
-    resize();
-    window.addEventListener('resize', resize);
+    resize()
+    window.addEventListener('resize', resize)
 
     const drawBG = () => {
-      const _W = W.current, _H = H.current, _G = GROUND_H.current;
-      const g = ctx.createLinearGradient(0, 0, 0, _H);
-      g.addColorStop(0, '#6ea0ff'); g.addColorStop(1, '#7b57c7');
-      ctx.fillStyle = g; ctx.fillRect(0, 0, _W, _H);
-      ctx.fillStyle = '#45308b';
-      ctx.fillRect(0, _H - _G, _W, _G);
-      ctx.strokeStyle = '#2e1f63'; ctx.lineWidth = 4;
-      ctx.beginPath(); ctx.moveTo(0, _H - _G); ctx.lineTo(_W, _H - _G); ctx.stroke();
-    };
+      const g = ctx.createLinearGradient(0, 0, 0, H.current)
+      g.addColorStop(0, '#020018')
+      g.addColorStop(1, '#150435')
+      ctx.fillStyle = g
+      ctx.fillRect(0, 0, W.current, H.current)
+      for (let i = 0; i < 40; i++) {
+        ctx.fillStyle = COLORS[ri(0, COLORS.length - 1)]
+        ctx.fillRect(ri(0, W.current), ri(0, H.current), 2, 2)
+      }
+    }
 
-    const drawBird = () => {
-      const b = bird.current;
-      ctx.fillStyle = '#FFD700';
-      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(b.x + 8, b.y - 5, 6, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(b.x + 10, b.y - 5, 3, 0, Math.PI * 2); ctx.fill();
-    };
+    const drawPlayer = () => {
+      const p = player.current
+      ctx.fillStyle = '#9b59b6'
+      ctx.fillRect(p.x, p.y, p.w, p.h)
+    }
+
+    const drawObjects = () => {
+      for (const o of objects.current) {
+        if (o.type === 'rock') {
+          ctx.fillStyle = '#444'
+          ctx.beginPath()
+          ctx.arc(o.x, o.y, 12, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = '#bbb'
+          ctx.lineWidth = 2
+          ctx.stroke()
+        } else {
+          ctx.fillStyle = o.color
+          ctx.beginPath()
+          ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      }
+    }
+
+    const spawnObject = () => {
+      const isStar = Math.random() < 0.8
+      const x = ri(10, W.current - 10)
+      const size = rf(6, 12)
+      const speed = BASE_SPEED + score * SPEED_INC
+      const color = isStar ? COLORS[ri(0, COLORS.length - 1)] : '#555'
+      const type = isStar ? 'star' : 'rock'
+      objects.current.push({ x, y: -10, size, color, speed, type })
+    }
 
     const step = () => {
-      frames.current++;
-      if (safeFrames.current > 0) safeFrames.current--;
-      if (flapCd.current > 0) flapCd.current--;
-
-      drawBG();
+      frames.current++
+      drawBG()
 
       if (state.current === 'playing') {
-        const b = bird.current;
-        const _H = H.current, _G = GROUND_H.current, _W = W.current;
+        if (frames.current % OBJECT_SPAWN_INTERVAL === 0) spawnObject()
 
-        // physics
-        b.v += GRAVITY; b.v *= 0.995;
-        if (b.v > MAX_DOWN) b.v = MAX_DOWN;
-        if (b.v < MAX_UP) b.v = MAX_UP;
-        b.y += b.v;
+        for (let i = objects.current.length - 1; i >= 0; i--) {
+          const o = objects.current[i]
+          o.y += o.speed
+          const p = player.current
 
-        // spawn
-        if (frames.current >= nextSpawnAt.current) { spawnPipe(_W); scheduleNextSpawn(); }
-
-        // pipes
-        for (let i = pipes.current.length - 1; i >= 0; i--) {
-          const p = pipes.current[i];
-          p.update(score.current);
-          p.draw(ctx);
-
-          if (!p.scored && b.x > p.x + p.width) {
-            p.scored = true;
-            score.current++; setScoreText(String(score.current));
+          if (o.y + o.size > p.y && o.x > p.x && o.x < p.x + p.w) {
+            if (o.type === 'star') {
+              setScore(s => s + 1)
+              objects.current.splice(i, 1)
+            } else {
+              state.current = 'over'
+              setHint('💥 GAME OVER — You hit a rock!')
+              drawGameOver(ctx)
+              audio.pause()
+              return
+            }
+          } else if (o.y > H.current) {
+            objects.current.splice(i, 1)
           }
-          if (p.x + p.width < 0) { pipes.current.splice(i, 1); continue; }
-          if (safeFrames.current <= 0 && p.collidesWith(b)) endGame();
         }
-
-        // bounds
-        if (b.y - b.r <= 0 && safeFrames.current <= 0) endGame();
-        const groundY = _H - _G - b.r;
-        if (b.y > groundY && safeFrames.current <= 0) endGame();
-      } else {
-        pipes.current.forEach(p => p.draw(ctx));
       }
 
-      drawBird();
-      requestAnimationFrame(step);
-    };
+      drawObjects()
+      drawPlayer()
 
-    function flap() {
-      if (state.current !== 'playing') return;
-      if (flapCd.current > 0) return;
-      bird.current.v = JUMP;
-      flapCd.current = FLAP_CD;
+      if (state.current === 'countdown' && countdown > 0) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)'
+        ctx.fillRect(0, 0, W.current, H.current)
+        ctx.fillStyle = '#fff'
+        ctx.font = `bold ${Math.round(W.current * 0.2)}px Arial`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(String(countdown), W.current / 2, H.current / 2)
+      }
+
+      requestAnimationFrame(step)
     }
-    const onClick = () => flap();
+
+    function drawGameOver(ctx: CanvasRenderingContext2D) {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(0, 0, W.current, H.current)
+      ctx.fillStyle = '#FF4C4C'
+      ctx.font = `bold ${Math.round(W.current * 0.08)}px Arial`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('💥 GAME OVER 💥', W.current / 2, H.current / 2)
+    }
+
+    const movePlayer = (dir: 'left' | 'right') => {
+      const p = player.current
+      const step = 15
+      if (dir === 'left') p.x = Math.max(0, p.x - step)
+      else p.x = Math.min(W.current - p.w, p.x + step)
+    }
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
-    };
+      if (state.current !== 'playing') return
+      if (e.code === 'ArrowLeft') movePlayer('left')
+      if (e.code === 'ArrowRight') movePlayer('right')
+    }
 
-    canvas.addEventListener('click', onClick);
-    document.addEventListener('keydown', onKey);
+    const onMouseMove = (e: MouseEvent) => {
+      if (state.current !== 'playing') return
+      const rect = canvas.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      player.current.x = Math.max(0, Math.min(W.current - player.current.w, x - player.current.w / 2))
+    }
 
-    step();
+    document.addEventListener('keydown', onKey)
+    canvas.addEventListener('mousemove', onMouseMove)
+    step()
+
     return () => {
-      window.removeEventListener('resize', resize);
-      canvas.removeEventListener('click', onClick);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, []);
-
-  /* ---------- request transaction before starting ---------- */
-  async function requestGameTx(action: 'play' | 'restart'): Promise<boolean> {
-    if (!isConnected || !address) {
-      setHint('Connect wallet first.'); 
-      return false;
+      window.removeEventListener('resize', resize)
+      document.removeEventListener('keydown', onKey)
+      canvas.removeEventListener('mousemove', onMouseMove)
     }
+  }, [countdown])
 
-    // ensure we’re in a Mini App host to avoid wallet chooser
-    try { await sdk.actions.ready(); } catch {}
-    const inside = await sdk.isInMiniApp().catch(() => false);
-    if (!inside) {
-      setHint('Open inside Warpcast/Base App to continue.');
-      return false;
+  function startCountdownThenPlay() {
+    objects.current = []
+    setScore(0)
+    state.current = 'countdown'
+    setHint('Get Ready ✨')
+    setCountdown(3)
+    audioRef.current?.play()
+
+    const timer = setInterval(() => {
+      setCountdown(c => {
+        if (c <= 1) {
+          clearInterval(timer)
+          state.current = 'playing'
+          setHint(`Catch stars & avoid rocks, @${viewer.username}!`)
+          return 0
+        }
+        return c - 1
+      })
+    }, 1000)
+  }
+
+  // ⬇️ TRY native Base ETH first; if the host doesn’t honor it, fallback to zero-address ERC-20.
+  async function startGame() {
+    if (!isConnected) {
+      setHint('Connect your wallet first!')
+      return
     }
-
-    if (paying) return false;
-    setPaying(true);
-    setHint('opening payment…');
+    if (paying) return
+    setPaying(true)
+    setHint('opening payment…')
 
     try {
-      // Preselect Base ETH (zero-address ERC-20) → no token picker
-      const res: any = await sdk.actions.sendToken({
-        recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
-        token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000',
-        amount: parseEther('0.00001').toString(),
-      });
-
-      const r: any = res;
-      if (r && (r.success === true || r.txHash)) {
-        return true;
-      } else {
-        const msg = r?.error?.message || r?.reason || 'Transaction canceled or blocked';
-        setHint(msg);
-        return false;
+      await sdk.actions.ready().catch(() => {})
+      const inside = await sdk.isInMiniApp().catch(() => false)
+      if (!inside) {
+        setHint('Open inside Warpcast/Base App')
+        return
       }
-    } catch (e) {
-      console.error(e);
-      setHint('Transaction canceled.');
-      return false;
+
+      const argsNative = {
+        recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
+        token: 'eip155:8453/slip44:60',                 // Base ETH (native form)
+        amount: parseEther('0.00001').toString(),
+      } as const
+
+      let res: any
+      try {
+        res = await sdk.actions.sendToken(argsNative)
+        console.log('[miniapp] sendToken (native):', res)
+      } catch (e) {
+        console.warn('[miniapp] native form failed:', e)
+      }
+
+      if (!res || !(res.success === true || res.txHash)) {
+        const argsFallback = {
+          recipientAddress: argsNative.recipientAddress,
+          token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000', // fallback “native”
+          amount: argsNative.amount,
+        } as const
+        res = await sdk.actions.sendToken(argsFallback)
+        console.log('[miniapp] sendToken (fallback):', res)
+      }
+
+      const r: any = res || {}
+      if (r && (r.success === true || r.txHash)) {
+        startCountdownThenPlay()
+      } else {
+        const msg = r?.error?.message || r?.reason || 'Transaction cancelled or blocked'
+        setHint(msg)
+      }
+    } catch (err) {
+      console.error('[miniapp] sendToken error:', err)
+      setHint('Transaction cancelled or blocked')
     } finally {
-      setPaying(false);
+      setPaying(false)
     }
   }
 
-  /* ---------- spawning ---------- */
-  function spawnPipe(startX = W.current) {
-    const _H = H.current, _G = GROUND_H.current;
-
-    // enforce horizontal spacing vs the last pipe
-    const last = pipes.current[pipes.current.length - 1];
-    if (last) {
-      const minAllowedX = last.x + last.width + MIN_H_SPACING;
-      if (startX < minAllowedX) startX = minAllowedX;
-    }
-
-    const base = SPEED_BASE + rf(SPEED_JITTER[0], SPEED_JITTER[1]);
-    const p = new Pipe(startX, _H, _G, {
-      gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
-      width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
-      speed: base
-    });
-
-    // small vertical drift vs previous pipe
-    if (last) {
-      const drift = ri(-VERTICAL_DRIFT, VERTICAL_DRIFT);
-      const topMin = 40;
-      const topMax = Math.max(topMin, _H - _G - p.gap - 40);
-      p.top = Math.min(topMax, Math.max(topMin, p.top + drift));
-    }
-    pipes.current.push(p);
-
-    // optional close buddy, but honor spacing
-    if (Math.random() < CLUSTER_PROB) {
-      let buddyX = startX + ri(CLUSTER_OFFSET[0], CLUSTER_OFFSET[1]);
-      const minBuddyX = p.x + p.width + MIN_H_SPACING;
-      if (buddyX < minBuddyX) buddyX = minBuddyX;
-
-      const buddy = new Pipe(buddyX, _H, _G, {
-        gap: ri(GAP_RANGE[0], GAP_RANGE[1]),
-        width: ri(WIDTH_RANGE[0], WIDTH_RANGE[1]),
-        speed: base
-      });
-      const topMin = 40;
-      const topMax = Math.max(topMin, _H - _G - buddy.gap - 40);
-      buddy.top = Math.min(topMax, Math.max(topMin, p.top + ri(-10, 10)));
-      pipes.current.push(buddy);
-    }
-  }
-
-  function scheduleNextSpawn() {
-    const jitter = ri(SPAWN_JITTER[0], SPAWN_JITTER[1]);
-    nextSpawnAt.current += SPAWN_BASE + jitter;
-  }
-
-  /* ---------- API helpers ---------- */
-  async function sendScore(username: string, s: number) {
-    try { await fetch('/api/score', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, score: s }) }); } catch {}
-  }
-  async function loadLeaderboard() {
-    try { const r = await fetch('/api/leaderboard'); if (!r.ok) return;
-      const data = (await r.json()) as LeaderRow[]; setLeader(data); } catch {}
-  }
-
-  /* ---------- controls (now gated by tx) ---------- */
-  async function startGame() {
-    const ok = await requestGameTx('play');
-    if (!ok) return;
-
-    state.current = 'playing';
-    setHint(`Fly, @${viewer.username}!`);
-    pipes.current = []; score.current = 0; frames.current = 0;
-    safeFrames.current = 90; flapCd.current = 0; setScoreText('0');
-    bird.current.x = Math.round(W.current * 0.18);
-    bird.current.y = H.current * 0.4; bird.current.v = 0;
-    bird.current.r = Math.max(12, Math.round(W.current * 0.03));
-    nextSpawnAt.current = frames.current + 55;
-  }
-
-  async function restartGame() {
-    const ok = await requestGameTx('restart');
-    if (!ok) return;
-    await startGame();
-  }
-
-  function endGame() {
-    if (state.current !== 'playing') return;
-    state.current = 'over';
-    setHint('game over. press Restart');
-    void sendScore(viewer.username, score.current).then(loadLeaderboard);
-  }
-
-  useEffect(() => { void loadLeaderboard(); }, []);
-
-  /* ---------- UI (overlays) ---------- */
   return (
-    <div
-      ref={wrapperRef}
-      style={{
-        width: '100%',
-        height: '100dvh',
-        overflow: 'hidden',
-        position: 'relative',
-        background: '#0a0713',
-      }}
-    >
-      {/* Canvas fills frame */}
+    <div ref={wrapperRef} style={{ width: '100%', height: '100dvh', position: 'relative', background: '#000' }}>
       <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} />
-
-      {/* Top-left controls + Connect */}
-      <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button onClick={startGame} style={btn} disabled={paying}>Play</button>
-        <button onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }} disabled={paying}>Restart</button>
-        <div style={{ marginLeft: 8 }}>
-          <ConnectWallet />
-        </div>
+      <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8 }}>
+        <button onClick={startGame} style={btn} disabled={paying}>
+          {paying ? 'Processing…' : 'Play'}
+        </button>
+        <button onClick={startCountdownThenPlay} style={{ ...btn, background: '#2a1f3b' }}>
+          Restart
+        </button>
+        <ConnectWallet />
       </div>
-
-      {/* Top-right score */}
-      <div style={{ position: 'absolute', top: 12, right: 12, fontWeight: 800 }}>{scoreText}</div>
-
-      {/* Bottom hint */}
-      {hint && (
-        <div style={{ position: 'absolute', left: 10, bottom: 10, color: '#b8a7d9', fontSize: 12 }}>
-          {hint}
-        </div>
-      )}
+      <div style={{ position: 'absolute', top: 12, right: 12, fontWeight: 800, color: '#fff' }}>{score}</div>
+      <div style={{ position: 'absolute', left: 10, bottom: 10, color: '#b8a7d9', fontSize: 12 }}>{hint}</div>
     </div>
-  );
+  )
 }
 
-/* ----------------- styles ----------------- */
 const btn: React.CSSProperties = {
   background: '#8e44ad',
   color: '#fff',
@@ -388,47 +310,5 @@ const btn: React.CSSProperties = {
   padding: '10px 14px',
   borderRadius: 12,
   fontWeight: 700,
-  cursor: 'pointer'
-};
-
-/* ----------------- Pipe ----------------- */
-class Pipe {
-  x: number; width: number; gap: number; top: number; speed: number;
-  H: number; ground: number; scored = false;
-
-  constructor(startX: number, H: number, GROUND_H: number, opts?: {
-    gap?: number; width?: number; speed?: number; top?: number;
-  }) {
-    this.x = startX; this.H = H; this.ground = GROUND_H;
-    this.gap   = opts?.gap   ?? ri(170, 230);
-    this.width = opts?.width ?? ri(50, 80);
-    this.speed = opts?.speed ?? 2.2;
-
-    const topMin = 40;
-    const topMax = Math.max(topMin, H - GROUND_H - this.gap - 40);
-    this.top = opts?.top ?? ri(topMin, topMax);
-  }
-
-  update(score: number) {
-    const scale = Math.min(1.5, 1 + score * 0.012); // gentler ramp
-    this.x -= this.speed * scale;
-  }
-
-  draw(ctx: CanvasRenderingContext2D) {
-    ctx.fillStyle = '#00C853'; ctx.strokeStyle = '#006E2E'; ctx.lineWidth = 4;
-    ctx.fillRect(this.x, 0, this.width, this.top);
-    ctx.strokeRect(this.x, 0, this.width, this.top);
-    const bottomY = this.top + this.gap;
-    const bottomH = this.H - this.ground - bottomY;
-    ctx.fillRect(this.x, bottomY, this.width, bottomH);
-    ctx.strokeRect(this.x, bottomY, this.width, bottomH);
-  }
-
-  collidesWith(b: { x: number; y: number; r: number }) {
-    if (b.x + b.r > this.x && b.x - b.r < this.x + this.width) {
-      const gapTop = this.top, gapBot = this.top + this.gap;
-      if (b.y - b.r < gapTop || b.y + b.r > gapBot) return true;
-    }
-    return false;
-  }
+  cursor: 'pointer',
 }
