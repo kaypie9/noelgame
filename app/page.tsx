@@ -6,6 +6,7 @@ import ConnectWallet from '@/components/ConnectWallet';
 
 import { useAccount, useSendTransaction } from 'wagmi';
 import { base } from 'wagmi/chains';
+import type { Address } from 'viem';
 // import { stringToHex } from 'viem'; // optional if you want to tag tx data
 
 /* ----------------- utils ----------------- */
@@ -13,6 +14,8 @@ const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a
 const rf = (a: number, b: number) => Math.random() * (b - a) + a;
 
 type LeaderRow = { username: string; score: number };
+
+const TREASURY_ADDRESS: Address = '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07';
 
 /* ----------------- page ----------------- */
 export default function Page() {
@@ -215,12 +218,11 @@ export default function Page() {
       setHint('Connect wallet first.'); return false;
     }
     try {
-      // Minimal on-chain ping: 0 ETH to self on Base (gas only)
-await sendTransactionAsync({
-  to: address,
-  // value: 0n,          // ← delete this line
-  chainId: base.id,
-});
+      // Minimal on-chain ping: 0 ETH to project treasury on Base (gas only)
+      await sendTransactionAsync({
+        to: TREASURY_ADDRESS,
+        chainId: base.id,
+      });
       return true;
     } catch {
       setHint('Transaction canceled.');
