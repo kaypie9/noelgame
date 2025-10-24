@@ -4,9 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
 
-import { useAccount, useSendTransaction } from 'wagmi';
-import { base } from 'wagmi/chains';
-// import { stringToHex } from 'viem'; // optional if you want to tag tx data
+import { useAccount } from 'wagmi';
+import { parseEther } from 'viem';
 
 /* ----------------- utils ----------------- */
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
@@ -28,7 +27,9 @@ export default function Page() {
 
   // Wallet
   const { address, isConnected } = useAccount();
-  const { sendTransactionAsync } = useSendTransaction();
+
+  // Payment guard
+  const [paying, setPaying] = useState(false);
 
   // Game state
   const state = useRef<'start' | 'playing' | 'over'>('start');
@@ -45,16 +46,16 @@ export default function Page() {
   const ASPECT = 9 / 16; // portrait width/height
 
   // Difficulty knobs (balanced/fair)
-  const GAP_RANGE: [number, number] = [170, 230];      // wider openings
-  const WIDTH_RANGE: [number, number] = [50, 80];      // slimmer pipes
-  const SPEED_BASE = 2.2;                               // a bit slower
+  const GAP_RANGE: [number, number] = [170, 230];
+  const WIDTH_RANGE: [number, number] = [50, 80];
+  const SPEED_BASE = 2.2;
   const SPEED_JITTER: [number, number] = [-0.1, 0.2];
-  const SPAWN_BASE = 110;                               // more spacing
+  const SPAWN_BASE = 110;
   const SPAWN_JITTER: [number, number] = [0, 30];
-  const CLUSTER_PROB = 0.25;                            // fewer pairs
-  const CLUSTER_OFFSET: [number, number] = [140, 210];  // wider pair spacing
-  const VERTICAL_DRIFT = 25;                            // gentler wander
-  const MIN_H_SPACING = 100;                            // guaranteed px between pipes
+  const CLUSTER_PROB = 0.25;
+  const CLUSTER_OFFSET: [number, number] = [140, 210];
+  const VERTICAL_DRIFT = 25;
+  const MIN_H_SPACING = 100;
 
   // Bird physics
   const GRAVITY = 0.17;
@@ -212,19 +213,44 @@ export default function Page() {
   /* ---------- request transaction before starting ---------- */
   async function requestGameTx(action: 'play' | 'restart'): Promise<boolean> {
     if (!isConnected || !address) {
-      setHint('Connect wallet first.'); return false;
+      setHint('Connect wallet first.'); 
+      return false;
     }
+
+    // ensure we’re in a Mini App host to avoid wallet chooser
+    try { await sdk.actions.ready(); } catch {}
+    const inside = await sdk.isInMiniApp().catch(() => false);
+    if (!inside) {
+      setHint('Open inside Warpcast/Base App to continue.');
+      return false;
+    }
+
+    if (paying) return false;
+    setPaying(true);
+    setHint('opening payment…');
+
     try {
-      // Minimal on-chain ping: 0 ETH to self on Base (gas only)
-await sendTransactionAsync({
-  to: address,
-  // value: 0n,          // ← delete this line
-  chainId: base.id,
-});
-      return true;
-    } catch {
+      // Preselect Base ETH (zero-address ERC-20) → no token picker
+      const res: any = await sdk.actions.sendToken({
+        recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
+        token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000',
+        amount: parseEther('0.00001').toString(),
+      });
+
+      const r: any = res;
+      if (r && (r.success === true || r.txHash)) {
+        return true;
+      } else {
+        const msg = r?.error?.message || r?.reason || 'Transaction canceled or blocked';
+        setHint(msg);
+        return false;
+      }
+    } catch (e) {
+      console.error(e);
       setHint('Transaction canceled.');
       return false;
+    } finally {
+      setPaying(false);
     }
   }
 
@@ -334,8 +360,8 @@ await sendTransactionAsync({
 
       {/* Top-left controls + Connect */}
       <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button onClick={startGame} style={btn}>Play</button>
-        <button onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }}>Restart</button>
+        <button onClick={startGame} style={btn} disabled={paying}>Play</button>
+        <button onClick={restartGame} style={{ ...btn, background: '#2a1f3b' }} disabled={paying}>Restart</button>
         <div style={{ marginLeft: 8 }}>
           <ConnectWallet />
         </div>
