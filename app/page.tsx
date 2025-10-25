@@ -3,8 +3,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
-import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi';
-import { parseEther } from 'viem';
+import {
+  useAccount,
+  useSendTransaction,
+  useWaitForTransactionReceipt,
+  useChainId as useWagmiChainId,
+  useSwitchChain,
+} from 'wagmi';
+import { Hex, parseEther } from 'viem';
 
 const CHAIN_ID = 8453; // Base mainnet
 
@@ -31,6 +37,9 @@ export default function Page() {
 
   const { isConnected, address } = useAccount();
   const { sendTransactionAsync } = useSendTransaction();
+  const { switchChainAsync } = useSwitchChain();
+  const currentChainId = useWagmiChainId();
+
   const { isSuccess: mined, isLoading: waitingReceipt } = useWaitForTransactionReceipt({
     hash: pendingHash,
     chainId: CHAIN_ID,
@@ -53,7 +62,9 @@ export default function Page() {
     (async () => {
       try {
         await sdk.actions.ready();
-        try { (sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition'); } catch {}
+        try {
+          (sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition');
+        } catch {}
       } catch {}
     })();
     document.title = 'Catch the Stars — Music Edition';
@@ -88,14 +99,17 @@ export default function Page() {
       canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      W.current = w; H.current = h;
+      W.current = w;
+      H.current = h;
       player.current.y = H.current - 40;
     }
 
     function drawBG() {
       const g = ctx.createLinearGradient(0, 0, 0, H.current);
-      g.addColorStop(0, '#020018'); g.addColorStop(1, '#150435');
-      ctx.fillStyle = g; ctx.fillRect(0, 0, W.current, H.current);
+      g.addColorStop(0, '#020018');
+      g.addColorStop(1, '#150435');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W.current, H.current);
       for (let i = 0; i < 40; i++) {
         ctx.fillStyle = COLORS[ri(0, COLORS.length - 1)];
         ctx.fillRect(ri(0, W.current), ri(0, H.current), 2, 2);
@@ -112,11 +126,17 @@ export default function Page() {
       for (const o of objects.current) {
         if (o.type === 'rock') {
           ctx.fillStyle = '#444';
-          ctx.beginPath(); ctx.arc(o.x, o.y, 12, 0, Math.PI * 2); ctx.fill();
-          ctx.strokeStyle = '#bbb'; ctx.lineWidth = 2; ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, 12, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#bbb';
+          ctx.lineWidth = 2;
+          ctx.stroke();
         } else {
           ctx.fillStyle = o.color;
-          ctx.beginPath(); ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath();
+          ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
     }
@@ -136,11 +156,17 @@ export default function Page() {
       ctx.fillRect(0, 0, W.current, H.current);
       ctx.fillStyle = '#FF4C4C';
       ctx.font = `bold ${Math.round(W.current * 0.08)}px Arial`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
       ctx.fillText('💥 GAME OVER 💥', W.current / 2, H.current / 2);
     }
 
+    // prevent stacked loops across rerenders
+    const loopAlive = { current: true };
+    let raf = 0;
+
     function step() {
+      if (!loopAlive.current) return;
       frames.current++;
       drawBG();
 
@@ -153,9 +179,19 @@ export default function Page() {
           const p = player.current;
 
           if (o.y + o.size > p.y && o.x > p.x && o.x < p.x + p.w) {
-            if (o.type === 'star') { setScore(s => s + 1); objects.current.splice(i, 1); }
-            else { state.current = 'over'; setHint('💥 GAME OVER — You hit a rock!'); drawGameOver(); audioRef.current?.pause(); return; }
-          } else if (o.y > H.current) objects.current.splice(i, 1);
+            if (o.type === 'star') {
+              setScore((s) => s + 1);
+              objects.current.splice(i, 1);
+            } else {
+              state.current = 'over';
+              setHint('💥 GAME OVER — You hit a rock!');
+              drawGameOver();
+              audioRef.current?.pause();
+              return;
+            }
+          } else if (o.y > H.current) {
+            objects.current.splice(i, 1);
+          }
         }
       }
 
@@ -167,18 +203,23 @@ export default function Page() {
         ctx.fillRect(0, 0, W.current, H.current);
         ctx.fillStyle = '#fff';
         ctx.font = `bold ${Math.round(W.current * 0.2)}px Arial`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
         ctx.fillText(String(countdown), W.current / 2, H.current / 2);
       }
 
-      requestAnimationFrame(step);
+      raf = requestAnimationFrame(step);
     }
 
     resize();
     window.addEventListener('resize', resize);
-    requestAnimationFrame(step);
+    raf = requestAnimationFrame(step);
 
-    return () => window.removeEventListener('resize', resize);
+    return () => {
+      loopAlive.current = false;
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', resize);
+    };
   }, [countdown, score]);
 
   function startCountdownThenPlay() {
@@ -190,19 +231,38 @@ export default function Page() {
     audioRef.current?.play().catch(() => {});
     const timer = setInterval(() => {
       setCountdown((c) => {
-        if (c <= 1) { clearInterval(timer); state.current = 'playing'; setHint('Catch stars & avoid rocks!'); return 0; }
+        if (c <= 1) {
+          clearInterval(timer);
+          state.current = 'playing';
+          setHint('Catch stars & avoid rocks!');
+          return 0;
+        }
         return c - 1;
       });
     }, 1000);
   }
 
+  // unique memo to avoid wallet "no changes detected"
+  function buildMemoData(): Hex {
+    const bytes = new Uint8Array(8);
+    crypto.getRandomValues(bytes);
+    let hex = '0x';
+    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+    return hex as Hex;
+  }
+
   /** Charge in Base ETH, then (on receipt) start */
   async function payThenStart() {
-    if (!isConnected || !address) { setHint('Connect your wallet first!'); return; }
+    if (!isConnected || !address) {
+      setHint('Connect your wallet first!');
+      return;
+    }
     if (paying) return;
 
-    // safety: never let zero-value slip through
-    if (PRICE_WEI <= BigInt(0)) { setHint('Config error: zero price'); return; }
+    if (PRICE_WEI <= BigInt(0)) {
+      setHint('Config error: zero price');
+      return;
+    }
 
     setPaying(true);
     setHint('Opening wallet…');
@@ -210,9 +270,29 @@ export default function Page() {
     try {
       await sdk.actions.ready().catch(() => {});
       const inside = await sdk.isInMiniApp().catch(() => false);
-      if (!inside) { setHint('Open inside Warpcast/Base App'); return; }
+      if (!inside) {
+        setHint('Open inside Warpcast/Base App');
+        return;
+      }
 
-      const request = { to: TREASURY, value: PRICE_WEI, chainId: CHAIN_ID };
+      // ensure correct chain
+      if (currentChainId !== CHAIN_ID) {
+        try {
+          await switchChainAsync({ chainId: CHAIN_ID });
+        } catch {
+          setHint('Please switch to Base');
+          return;
+        }
+      }
+
+      // add a tiny memo in data so each tx is unique
+      const request = {
+        to: TREASURY,
+        value: PRICE_WEI,
+        chainId: CHAIN_ID,
+        data: buildMemoData(),
+      } as const;
+
       const hash = await sendTransactionAsync(request);
       setHint('Waiting for confirmation…');
       setPendingHash(hash);
@@ -225,7 +305,14 @@ export default function Page() {
   }
 
   return (
-    <div ref={wrapperRef} style={{ width: '100%', height: '100dvh', position: 'relative', background: '#000' }}>
+    <div
+      ref={wrapperRef}
+      style={{ width: '100%', height: '100dvh', position: 'relative', background: '#000' }}
+      onKeyDown={(e) => {
+        if (e.code === 'Space') payThenStart();
+      }}
+      tabIndex={0}
+    >
       <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%', zIndex: 0, position: 'relative' }} />
 
       <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8, zIndex: 10, alignItems: 'center' }}>
