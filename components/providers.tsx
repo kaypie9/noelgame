@@ -5,6 +5,7 @@ import { WagmiProvider, createConfig, http } from 'wagmi';
 import { base } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector';
+import MiniAppBootstrap from '@/components/MiniAppBootstrap';
 
 export default function Providers({ children }: { children: ReactNode }) {
   const queryClient = useMemo(() => new QueryClient(), []);
@@ -13,7 +14,7 @@ export default function Providers({ children }: { children: ReactNode }) {
     () =>
       createConfig({
         chains: [base],
-        transports: { [base.id]: http() }, // replace with your own RPC if you want
+        transports: { [base.id]: http() },
         connectors: [farcasterMiniApp()],
         ssr: false, // IMPORTANT for Next app router
       }),
@@ -22,6 +23,8 @@ export default function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
+      {/* Call ready() once at app start */}
+      <MiniAppBootstrap />
       <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
     </QueryClientProvider>
   );
