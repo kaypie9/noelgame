@@ -10,7 +10,7 @@ import {
   useChainId as useWagmiChainId,
   useSwitchChain,
 } from 'wagmi';
-import { Hex, parseEther } from 'viem';
+import { Hex, parseEther, stringToHex } from 'viem';
 
 const CHAIN_ID = 8453; // Base mainnet
 
@@ -57,14 +57,24 @@ export default function Page() {
   const BASE_SPEED = 0.4;
   const SPEED_INC = 0.01;
 
+// uniqueness + click lock helpers
+const sessionSalt = useRef<string>('');
+if (!sessionSalt.current) {
+  const b = new Uint8Array(6);
+  crypto.getRandomValues(b);
+  sessionSalt.current = Array.from(b)
+    .map(x => x.toString(16).padStart(2, '0'))
+    .join('');
+}
+const attemptRef = useRef(0);
+const clickLockUntil = useRef(0);
+
   // clear splash early
   useEffect(() => {
     (async () => {
       try {
         await sdk.actions.ready();
-        try {
-          (sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition');
-        } catch {}
+        try { (sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition'); } catch {}
       } catch {}
     })();
     document.title = 'Catch the Stars — Music Edition';
@@ -73,7 +83,7 @@ export default function Page() {
   // start game when receipt is mined
   useEffect(() => {
     if (mined && pendingHash) {
-      setHint('Payment confirmed — good luck!');
+      setHint('Payment confirmed, good luck!');
       setPendingHash(undefined);
       startCountdownThenPlay();
     }
@@ -99,17 +109,14 @@ export default function Page() {
       canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      W.current = w;
-      H.current = h;
+      W.current = w; H.current = h;
       player.current.y = H.current - 40;
     }
 
     function drawBG() {
       const g = ctx.createLinearGradient(0, 0, 0, H.current);
-      g.addColorStop(0, '#020018');
-      g.addColorStop(1, '#150435');
-      ctx.fillStyle = g;
-      ctx.fillRect(0, 0, W.current, H.current);
+      g.addColorStop(0, '#020018'); g.addColorStop(1, '#150435');
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W.current, H.current);
       for (let i = 0; i < 40; i++) {
         ctx.fillStyle = COLORS[ri(0, COLORS.length - 1)];
         ctx.fillRect(ri(0, W.current), ri(0, H.current), 2, 2);
@@ -126,17 +133,11 @@ export default function Page() {
       for (const o of objects.current) {
         if (o.type === 'rock') {
           ctx.fillStyle = '#444';
-          ctx.beginPath();
-          ctx.arc(o.x, o.y, 12, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.strokeStyle = '#bbb';
-          ctx.lineWidth = 2;
-          ctx.stroke();
+          ctx.beginPath(); ctx.arc(o.x, o.y, 12, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = '#bbb'; ctx.lineWidth = 2; ctx.stroke();
         } else {
           ctx.fillStyle = o.color;
-          ctx.beginPath();
-          ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.beginPath(); ctx.arc(o.x, o.y, o.size, 0, Math.PI * 2); ctx.fill();
         }
       }
     }
@@ -156,8 +157,7 @@ export default function Page() {
       ctx.fillRect(0, 0, W.current, H.current);
       ctx.fillStyle = '#FF4C4C';
       ctx.font = `bold ${Math.round(W.current * 0.08)}px Arial`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('💥 GAME OVER 💥', W.current / 2, H.current / 2);
     }
 
@@ -179,19 +179,9 @@ export default function Page() {
           const p = player.current;
 
           if (o.y + o.size > p.y && o.x > p.x && o.x < p.x + p.w) {
-            if (o.type === 'star') {
-              setScore((s) => s + 1);
-              objects.current.splice(i, 1);
-            } else {
-              state.current = 'over';
-              setHint('💥 GAME OVER — You hit a rock!');
-              drawGameOver();
-              audioRef.current?.pause();
-              return;
-            }
-          } else if (o.y > H.current) {
-            objects.current.splice(i, 1);
-          }
+            if (o.type === 'star') { setScore(s => s + 1); objects.current.splice(i, 1); }
+            else { state.current = 'over'; setHint('💥 GAME OVER, you hit a rock'); drawGameOver(); audioRef.current?.pause(); return; }
+          } else if (o.y > H.current) objects.current.splice(i, 1);
         }
       }
 
@@ -203,8 +193,7 @@ export default function Page() {
         ctx.fillRect(0, 0, W.current, H.current);
         ctx.fillStyle = '#fff';
         ctx.font = `bold ${Math.round(W.current * 0.2)}px Arial`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(String(countdown), W.current / 2, H.current / 2);
       }
 
@@ -231,69 +220,70 @@ export default function Page() {
     audioRef.current?.play().catch(() => {});
     const timer = setInterval(() => {
       setCountdown((c) => {
-        if (c <= 1) {
-          clearInterval(timer);
-          state.current = 'playing';
-          setHint('Catch stars & avoid rocks!');
-          return 0;
-        }
+        if (c <= 1) { clearInterval(timer); state.current = 'playing'; setHint('Catch stars & avoid rocks!'); return 0; }
         return c - 1;
       });
     }, 1000);
   }
 
-  // unique memo to avoid wallet "no changes detected"
+  // unique data per attempt to defeat no changes detected
   function buildMemoData(): Hex {
-    const bytes = new Uint8Array(8);
-    crypto.getRandomValues(bytes);
-    let hex = '0x';
-    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
-    return hex as Hex;
+    attemptRef.current += 1;
+    const memo = `play:${Date.now()}:${sessionSalt.current}:${attemptRef.current}`;
+    return stringToHex(memo) as Hex;
   }
+
+  function playClickGuard(): boolean {
+    const now = Date.now();
+    if (now < clickLockUntil.current) return false;
+    clickLockUntil.current = now + 1500; // 1.5s lock to block double taps
+    return true;
+    }
 
   /** Charge in Base ETH, then (on receipt) start */
   async function payThenStart() {
-    if (!isConnected || !address) {
-      setHint('Connect your wallet first!');
-      return;
-    }
-    if (paying) return;
+    if (!isConnected || !address) { setHint('Connect your wallet first'); return; }
+    if (!playClickGuard()) return;
+    if (paying || waitingReceipt || pendingHash) return;
 
-    if (PRICE_WEI <= BigInt(0)) {
-      setHint('Config error: zero price');
-      return;
-    }
+    if (PRICE_WEI <= BigInt(0)) { setHint('Config error: zero price'); return; }
 
     setPaying(true);
     setHint('Opening wallet…');
 
+    const trySend = async (): Promise<`0x${string}`> => {
+      // ensure correct chain
+      if (currentChainId !== CHAIN_ID) {
+        try { await switchChainAsync({ chainId: CHAIN_ID }); }
+        catch { throw new Error('switch'); }
+      }
+      const request = { to: TREASURY, value: PRICE_WEI, chainId: CHAIN_ID, data: buildMemoData() } as const;
+      return await sendTransactionAsync(request);
+    };
+
     try {
       await sdk.actions.ready().catch(() => {});
       const inside = await sdk.isInMiniApp().catch(() => false);
-      if (!inside) {
-        setHint('Open inside Warpcast/Base App');
-        return;
-      }
+      if (!inside) { setHint('Open inside Warpcast/Base App'); return; }
 
-      // ensure correct chain
-      if (currentChainId !== CHAIN_ID) {
-        try {
-          await switchChainAsync({ chainId: CHAIN_ID });
-        } catch {
+      let hash: `0x${string}` | undefined;
+      try {
+        hash = await trySend();
+      } catch (e: any) {
+        const msg = String(e?.message || e);
+        // auto retry once on no changes / identical tx style errors
+        if (/no changes detected|no changes to send|already known/i.test(msg)) {
+          setHint('Refreshing tx…');
+          hash = await trySend();
+        } else if (msg === 'switch') {
           setHint('Please switch to Base');
           return;
+        } else {
+          throw e;
         }
       }
 
-      // add a tiny memo in data so each tx is unique
-      const request = {
-        to: TREASURY,
-        value: PRICE_WEI,
-        chainId: CHAIN_ID,
-        data: buildMemoData(),
-      } as const;
-
-      const hash = await sendTransactionAsync(request);
+      if (!hash) { setHint('Transaction not created'); return; }
       setHint('Waiting for confirmation…');
       setPendingHash(hash);
     } catch (err) {
@@ -304,22 +294,22 @@ export default function Page() {
     }
   }
 
+  const playDisabled = paying || waitingReceipt || !!pendingHash || (state.current !== 'start' && state.current !== 'over');
+
   return (
     <div
       ref={wrapperRef}
       style={{ width: '100%', height: '100dvh', position: 'relative', background: '#000' }}
-      onKeyDown={(e) => {
-        if (e.code === 'Space') payThenStart();
-      }}
+      onKeyDown={(e) => { if (e.code === 'Space' && !playDisabled) payThenStart(); }}
       tabIndex={0}
     >
       <canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%', zIndex: 0, position: 'relative' }} />
 
       <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', gap: 8, zIndex: 10, alignItems: 'center' }}>
-        <button onClick={payThenStart} style={btn} disabled={paying || waitingReceipt}>
+        <button onClick={payThenStart} style={btn} disabled={playDisabled}>
           {waitingReceipt ? 'Confirming…' : paying ? 'Processing…' : 'Play'}
         </button>
-        <button onClick={payThenStart} style={{ ...btn, background: '#2a1f3b' }} disabled={paying || waitingReceipt}>
+        <button onClick={payThenStart} style={{ ...btn, background: '#2a1f3b' }} disabled={playDisabled}>
           Restart
         </button>
         <ConnectWallet />
