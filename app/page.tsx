@@ -4,14 +4,13 @@ import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
 import { useAccount } from 'wagmi';
+import { parseEther } from 'viem';
 
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
 const rf = (a: number, b: number) => Math.random() * (b - a) + a;
 const COLORS = ['#FFD700', '#FF69B4', '#00FFFF', '#ADFF2F', '#FFA500'];
 
 export default function Page() {
-  console.log('[page] mount');
-
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -21,6 +20,7 @@ export default function Page() {
   const [hint, setHint] = useState('Press Play or Space to start');
   const [countdown, setCountdown] = useState(0);
   const [viewer] = useState<{ username: string }>({ username: 'guest' });
+  const [paying, setPaying] = useState(false);
 
   const { isConnected } = useAccount();
 
@@ -36,27 +36,19 @@ export default function Page() {
   const BASE_SPEED = 0.4;
   const SPEED_INC = 0.01;
 
-  // Make sure the host splash is cleared ASAP
+  // Call ready() ASAP so the splash clears
   useEffect(() => {
     (async () => {
       try {
         await sdk.actions.ready();
         try { (sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition'); } catch {}
-      } catch (e) {
-        console.warn('[page] ready() failed', e);
-      }
+      } catch {}
     })();
     document.title = 'Catch the Stars — Music Edition';
   }, []);
 
   useEffect(() => {
-    console.log('[page] game init effect');
-
     const canvas = canvasRef.current!;
-    if (!canvas) {
-      console.error('[page] canvas missing');
-      return;
-    }
     const ctx = canvas.getContext('2d')!;
     ctxRef.current = ctx;
 
@@ -153,9 +145,6 @@ export default function Page() {
       if (state.current !== 'playing') return;
       if (e.code === 'ArrowLeft') movePlayer('left');
       if (e.code === 'ArrowRight') movePlayer('right');
-      if (e.code === 'Space') {
-        // optional: flap action or start
-      }
     };
 
     const onMouseMove = (e: MouseEvent) => {
@@ -164,6 +153,9 @@ export default function Page() {
       const x = e.clientX - rect.left;
       player.current.x = Math.max(0, Math.min(W.current - player.current.w, x - player.current.w / 2));
     };
+
+    document.addEventListener('keydown', onKey);
+    canvas.addEventListener('mousemove', onMouseMove);
 
     function step() {
       frames.current++;
@@ -198,6 +190,7 @@ export default function Page() {
       drawPlayer();
 
       if (state.current === 'countdown' && countdown > 0) {
+        const ctx = ctxRef.current!;
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
         ctx.fillRect(0, 0, W.current, H.current);
         ctx.fillStyle = '#fff';
@@ -210,8 +203,6 @@ export default function Page() {
       requestAnimationFrame(step);
     }
 
-    document.addEventListener('keydown', onKey);
-    canvas.addEventListener('mousemove', onMouseMove);
     step();
 
     return () => {
@@ -219,7 +210,7 @@ export default function Page() {
       document.removeEventListener('keydown', onKey);
       canvas.removeEventListener('mousemove', onMouseMove);
     };
-  }, [countdown, score]);
+  }, [countdown]);
 
   function startCountdownThenPlay() {
     objects.current = [];
@@ -242,6 +233,45 @@ export default function Page() {
     }, 1000);
   }
 
+  // Simple Base transaction using Mini App SDK
+  async function startGame() {
+    if (!isConnected) {
+      setHint('Connect your wallet first!');
+      return;
+    }
+    if (paying) return;
+
+    setPaying(true);
+    setHint('opening wallet…');
+
+    try {
+      await sdk.actions.ready().catch(() => {});
+      const inside = await sdk.isInMiniApp().catch(() => false);
+      if (!inside) {
+        setHint('Open inside Warpcast/Base App');
+        return;
+      }
+
+      const res: any = await sdk.actions.sendToken({
+        recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07', // <-- your game/treasury address
+        token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000', // Base ETH
+        amount: parseEther('0.00001').toString(), // wei string
+      });
+
+      if (res && (res.success === true || res.txHash)) {
+        startCountdownThenPlay();
+      } else {
+        const msg = res?.error?.message || res?.reason || 'Transaction cancelled or blocked';
+        setHint(msg);
+      }
+    } catch (err) {
+      console.error(err);
+      setHint('Transaction cancelled or blocked');
+    } finally {
+      setPaying(false);
+    }
+  }
+
   return (
     <div
       ref={wrapperRef}
@@ -252,7 +282,6 @@ export default function Page() {
         background: '#000',
       }}
     >
-      {/* Canvas sits at the back */}
       <canvas
         ref={canvasRef}
         style={{
@@ -264,7 +293,6 @@ export default function Page() {
         }}
       />
 
-      {/* Controls above canvas with high z-index */}
       <div
         style={{
           position: 'absolute',
@@ -276,8 +304,8 @@ export default function Page() {
           alignItems: 'center',
         }}
       >
-        <button onClick={startCountdownThenPlay} style={btn}>
-          Play
+        <button onClick={startGame} style={btn} disabled={paying}>
+          {paying ? 'Processing…' : 'Play'}
         </button>
         <button onClick={startCountdownThenPlay} style={{ ...btn, background: '#2a1f3b' }}>
           Restart
@@ -285,7 +313,6 @@ export default function Page() {
         <ConnectWallet />
       </div>
 
-      {/* Score */}
       <div
         style={{
           position: 'absolute',
@@ -299,7 +326,6 @@ export default function Page() {
         {score}
       </div>
 
-      {/* Hint */}
       <div
         style={{
           position: 'absolute',
