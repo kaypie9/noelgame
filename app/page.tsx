@@ -11,6 +11,10 @@ const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a
 const rf = (a: number, b: number) => Math.random() * (b - a) + a;
 const COLORS = ['#FFD700', '#FF69B4', '#00FFFF', '#ADFF2F', '#FFA500'];
 
+// how much to charge per game
+const PRICE_WEI = parseEther('0.00001');
+const TREASURY = '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07';
+
 export default function Page() {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -38,7 +42,7 @@ export default function Page() {
   const BASE_SPEED = 0.4;
   const SPEED_INC = 0.01;
 
-  // Make sure host splash clears ASAP
+  // clear splash early
   useEffect(() => {
     (async () => {
       try {
@@ -127,7 +131,6 @@ export default function Page() {
     };
 
     function drawGameOver() {
-      const ctx = ctxRef.current!;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(0, 0, W.current, H.current);
       ctx.fillStyle = '#FF4C4C';
@@ -236,8 +239,8 @@ export default function Page() {
     }, 1000);
   }
 
-  // SIMPLE BASE MAINNET TX via Wagmi (compact Confirm sheet)
-  async function startGame() {
+  /** Charge in Base ETH, then start the game */
+  async function payThenStart() {
     if (!isConnected || !address) {
       setHint('Connect your wallet first!');
       return;
@@ -255,19 +258,15 @@ export default function Page() {
         return;
       }
 
-      // This triggers the small "Confirm transaction" sheet.
-      // Use any recipient you like (self, treasury, etc.).
-      const txHash = await sendTransactionAsync({
-        to: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',        // recipient
-        value: parseEther('0.00001'),                           // ETH amount
-        chainId: base.id,                                       // Base mainnet
+      // Always the same amount & chain for every click:
+      const hash = await sendTransactionAsync({
+        to: TREASURY,
+        value: PRICE_WEI,    // ensure non-zero!
+        chainId: base.id,    // Base mainnet
       });
 
-      if (txHash) {
-        startCountdownThenPlay();
-      } else {
-        setHint('Transaction cancelled or blocked');
-      }
+      if (hash) startCountdownThenPlay();
+      else setHint('Transaction cancelled or blocked');
     } catch (err) {
       console.error(err);
       setHint('Transaction cancelled or blocked');
@@ -308,10 +307,11 @@ export default function Page() {
           alignItems: 'center',
         }}
       >
-        <button onClick={startGame} style={btn} disabled={paying}>
+        {/* charge on both Play and Restart */}
+        <button onClick={payThenStart} style={btn} disabled={paying}>
           {paying ? 'Processing…' : 'Play'}
         </button>
-        <button onClick={startCountdownThenPlay} style={{ ...btn, background: '#2a1f3b' }}>
+        <button onClick={payThenStart} style={{ ...btn, background: '#2a1f3b' }} disabled={paying}>
           Restart
         </button>
         <ConnectWallet />
