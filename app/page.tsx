@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
-import { useAccount } from 'wagmi';
+import { useAccount, useSendTransaction } from 'wagmi';
+import { base } from 'wagmi/chains';
 import { parseEther } from 'viem';
 
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
@@ -22,7 +23,8 @@ export default function Page() {
   const [viewer] = useState<{ username: string }>({ username: 'guest' });
   const [paying, setPaying] = useState(false);
 
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useAccount();
+  const { sendTransactionAsync } = useSendTransaction();
 
   const state = useRef<'start' | 'countdown' | 'playing' | 'over'>('start');
   const objects = useRef<{ x: number; y: number; size: number; color: string; speed: number; type: 'star' | 'rock' }[]>([]);
@@ -36,7 +38,7 @@ export default function Page() {
   const BASE_SPEED = 0.4;
   const SPEED_INC = 0.01;
 
-  // Call ready() ASAP so the splash clears
+  // Make sure host splash clears ASAP
   useEffect(() => {
     (async () => {
       try {
@@ -125,6 +127,7 @@ export default function Page() {
     };
 
     function drawGameOver() {
+      const ctx = ctxRef.current!;
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fillRect(0, 0, W.current, H.current);
       ctx.fillStyle = '#FF4C4C';
@@ -233,9 +236,9 @@ export default function Page() {
     }, 1000);
   }
 
-  // Simple Base transaction using Mini App SDK
+  // SIMPLE BASE MAINNET TX via Wagmi (compact Confirm sheet)
   async function startGame() {
-    if (!isConnected) {
+    if (!isConnected || !address) {
       setHint('Connect your wallet first!');
       return;
     }
@@ -252,17 +255,18 @@ export default function Page() {
         return;
       }
 
-      const res: any = await sdk.actions.sendToken({
-        recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07', // <-- your game/treasury address
-        token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000', // Base ETH
-        amount: parseEther('0.00001').toString(), // wei string
+      // This triggers the small "Confirm transaction" sheet.
+      // Use any recipient you like (self, treasury, etc.).
+      const txHash = await sendTransactionAsync({
+        to: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',        // recipient
+        value: parseEther('0.00001'),                           // ETH amount
+        chainId: base.id,                                       // Base mainnet
       });
 
-      if (res && (res.success === true || res.txHash)) {
+      if (txHash) {
         startCountdownThenPlay();
       } else {
-        const msg = res?.error?.message || res?.reason || 'Transaction cancelled or blocked';
-        setHint(msg);
+        setHint('Transaction cancelled or blocked');
       }
     } catch (err) {
       console.error(err);
