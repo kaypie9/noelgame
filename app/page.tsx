@@ -6,10 +6,19 @@ import ConnectWallet from '@/components/ConnectWallet'
 import { useAccount } from 'wagmi'
 import { parseEther } from 'viem'
 
+/**
+ * Toggle which wallet flow you want:
+ * - DOCS_FLOW = true  -> shows wallet's token picker (exact Farcaster docs flow)
+ * - DOCS_FLOW = false -> preselects Base ETH, skips token picker (still shows Review → Confirm)
+ */
+const DOCS_FLOW = false
+
+/* ----------------- utils ----------------- */
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a
 const rf = (a: number, b: number) => Math.random() * (b - a) + a
-const COLORS = ['#FFD700', '#FF69B4', '#00FFFF', '#ADFF2F', '#FFA500']
+type Obj = { x: number; y: number; size: number; color: string; speed: number; type: 'star' | 'rock' }
 
+/* ----------------- page ----------------- */
 export default function Page() {
   const wrapperRef = useRef<HTMLDivElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -25,7 +34,7 @@ export default function Page() {
   const { isConnected } = useAccount()
 
   const state = useRef<'start' | 'countdown' | 'playing' | 'over'>('start')
-  const objects = useRef<{ x: number; y: number; size: number; color: string; speed: number; type: 'star' | 'rock' }[]>([])
+  const objects = useRef<Obj[]>([])
   const player = useRef({ x: 200, y: 420, w: 70, h: 20 })
   const frames = useRef(0)
 
@@ -35,23 +44,31 @@ export default function Page() {
   const OBJECT_SPAWN_INTERVAL = 100
   const BASE_SPEED = 0.4
   const SPEED_INC = 0.01
+  const COLORS = ['#FFD700', '#FF69B4', '#00FFFF', '#ADFF2F', '#FFA500']
 
+  /* ---------- Mini App boot ---------- */
   useEffect(() => {
     sdk.actions.ready()
     document.title = 'Catch the Stars — Music Edition'
-    try {
-      ;(sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition')
-    } catch {}
+    try { ;(sdk.actions as any)?.setTitle?.('Catch the Stars — Music Edition') } catch {}
+    ;(async () => {
+      try {
+        const inMini = await sdk.isInMiniApp()
+        if (!inMini) setHint('Open inside Warpcast/Base App for wallet flow')
+        const ctx = await sdk.context
+        const u = ctx?.user
+        if (u?.username) setViewer({ username: u.username })
+      } catch {}
+    })()
   }, [])
 
+  /* ---------- Canvas + loop ---------- */
   useEffect(() => {
     const canvas = canvasRef.current!
     const ctx = canvas.getContext('2d')!
     ctxRef.current = ctx
 
-    const audio = new Audio(
-      'https://cdn.pixabay.com/download/audio/2022/03/15/audio_74c715d9cf.mp3?filename=peaceful-ambient-11157.mp3'
-    )
+    const audio = new Audio('https://cdn.pixabay.com/download/audio/2022/03/15/audio_74c715d9cf.mp3?filename=peaceful-ambient-11157.mp3')
     audio.loop = true
     audio.volume = 0.3
     audioRef.current = audio
@@ -61,21 +78,17 @@ export default function Page() {
       const w = wrap.clientWidth
       const h = Math.floor(w / (9 / 16))
       const dpr = window.devicePixelRatio || 1
-      const canvasEl = canvasRef.current!
-      canvasEl.width = w * dpr
-      canvasEl.height = h * dpr
-      canvasEl.style.width = w + 'px'
-      canvasEl.style.height = h + 'px'
+      canvas.width = w * dpr
+      canvas.height = h * dpr
+      canvas.style.width = w + 'px'
+      canvas.style.height = h + 'px'
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       W.current = w
       H.current = h
       player.current.y = H.current - 40
     }
 
-    resize()
-    window.addEventListener('resize', resize)
-
-    const drawBG = () => {
+    function drawBG() {
       const g = ctx.createLinearGradient(0, 0, 0, H.current)
       g.addColorStop(0, '#020018')
       g.addColorStop(1, '#150435')
@@ -87,13 +100,13 @@ export default function Page() {
       }
     }
 
-    const drawPlayer = () => {
+    function drawPlayer() {
       const p = player.current
       ctx.fillStyle = '#9b59b6'
       ctx.fillRect(p.x, p.y, p.w, p.h)
     }
 
-    const drawObjects = () => {
+    function drawObjects() {
       for (const o of objects.current) {
         if (o.type === 'rock') {
           ctx.fillStyle = '#444'
@@ -112,7 +125,7 @@ export default function Page() {
       }
     }
 
-    const spawnObject = () => {
+    function spawnObject() {
       const isStar = Math.random() < 0.8
       const x = ri(10, W.current - 10)
       const size = rf(6, 12)
@@ -122,7 +135,17 @@ export default function Page() {
       objects.current.push({ x, y: -10, size, color, speed, type })
     }
 
-    const step = () => {
+    function drawGameOver() {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(0, 0, W.current, H.current)
+      ctx.fillStyle = '#FF4C4C'
+      ctx.font = `bold ${Math.round(W.current * 0.08)}px Arial`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText('💥 GAME OVER 💥', W.current / 2, H.current / 2)
+    }
+
+    function step() {
       frames.current++
       drawBG()
 
@@ -141,7 +164,7 @@ export default function Page() {
             } else {
               state.current = 'over'
               setHint('💥 GAME OVER — You hit a rock!')
-              drawGameOver(ctx)
+              drawGameOver()
               audio.pause()
               return
             }
@@ -167,36 +190,26 @@ export default function Page() {
       requestAnimationFrame(step)
     }
 
-    function drawGameOver(ctx: CanvasRenderingContext2D) {
-      ctx.fillStyle = 'rgba(0,0,0,0.6)'
-      ctx.fillRect(0, 0, W.current, H.current)
-      ctx.fillStyle = '#FF4C4C'
-      ctx.font = `bold ${Math.round(W.current * 0.08)}px Arial`
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText('💥 GAME OVER 💥', W.current / 2, H.current / 2)
+    function onKey(e: KeyboardEvent) {
+      if (state.current !== 'playing') return
+      if (e.code === 'ArrowLeft') movePlayer('left')
+      if (e.code === 'ArrowRight') movePlayer('right')
     }
-
-    const movePlayer = (dir: 'left' | 'right') => {
+    function movePlayer(dir: 'left' | 'right') {
       const p = player.current
       const step = 15
       if (dir === 'left') p.x = Math.max(0, p.x - step)
       else p.x = Math.min(W.current - p.w, p.x + step)
     }
-
-    const onKey = (e: KeyboardEvent) => {
-      if (state.current !== 'playing') return
-      if (e.code === 'ArrowLeft') movePlayer('left')
-      if (e.code === 'ArrowRight') movePlayer('right')
-    }
-
-    const onMouseMove = (e: MouseEvent) => {
+    function onMouseMove(e: MouseEvent) {
       if (state.current !== 'playing') return
       const rect = canvas.getBoundingClientRect()
       const x = e.clientX - rect.left
       player.current.x = Math.max(0, Math.min(W.current - player.current.w, x - player.current.w / 2))
     }
 
+    resize()
+    window.addEventListener('resize', resize)
     document.addEventListener('keydown', onKey)
     canvas.addEventListener('mousemove', onMouseMove)
     step()
@@ -229,18 +242,18 @@ export default function Page() {
     }, 1000)
   }
 
-  // === Farcaster docs flow: open wallet sheet, user picks token → review → confirm ===
+  /* ---------- payment + start ---------- */
   async function startGame() {
     if (!isConnected) {
       setHint('Connect your wallet first!')
       return
     }
     if (paying) return
+
     setPaying(true)
     setHint('opening wallet…')
 
     try {
-      // Ensure Mini App context (docs recommend this)
       await sdk.actions.ready().catch(() => {})
       const inside = await sdk.isInMiniApp().catch(() => false)
       if (!inside) {
@@ -248,23 +261,27 @@ export default function Page() {
         return
       }
 
-      // Minimal docs-style call: user can choose token (ETH on Base, etc.)
-      // Amount must be a string in wei. parseEther('0.00001') => BigInt → cast to string.
-      const res: any = await sdk.actions.sendToken({
+      const baseArgs: any = {
         recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
-        amount: parseEther('0.00001').toString(),
-        // token omitted on purpose → host shows token chooser (per docs)
-      })
+        amount: parseEther('0.00001').toString(), // wei as string
+      }
+
+      // DOCS flow → show token picker; otherwise preselect Base ETH and skip picker
+      if (!DOCS_FLOW) {
+        baseArgs.token = 'eip155:8453/erc20:0x0000000000000000000000000000000000000000' // Base ETH (zero-address form)
+      }
+
+      const res: any = await sdk.actions.sendToken(baseArgs)
 
       if (res && (res.success === true || res.txHash)) {
         startCountdownThenPlay()
       } else {
-        const msg = res?.error?.message || res?.reason || 'Transaction cancelled'
+        const msg = res?.error?.message || res?.reason || 'Transaction cancelled or blocked'
         setHint(msg)
       }
     } catch (err) {
       console.error(err)
-      setHint('Transaction cancelled')
+      setHint('Transaction cancelled or blocked')
     } finally {
       setPaying(false)
     }
