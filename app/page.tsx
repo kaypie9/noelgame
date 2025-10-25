@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { sdk } from '@farcaster/miniapp-sdk';
 import ConnectWallet from '@/components/ConnectWallet';
-import { useAccount, useSendTransaction } from 'wagmi';
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi';
 import { base } from 'wagmi/chains';
-import { parseEther } from 'viem';
+import { parseEther, stringToHex, type Hex } from 'viem';
 
 const ri = (a: number, b: number) => Math.floor(Math.random() * (b - a + 1)) + a;
 const rf = (a: number, b: number) => Math.random() * (b - a) + a;
@@ -23,8 +23,22 @@ export default function Page() {
   const [viewer] = useState<{ username: string }>({ username: 'guest' });
   const [paying, setPaying] = useState(false);
 
+  // new: track pending hash so we can wait for receipt
+  const [pendingHash, setPendingHash] = useState<`0x${string}` | undefined>(undefined);
+
   const { isConnected, address } = useAccount();
   const { sendTransactionAsync } = useSendTransaction();
+
+  // wait for on-chain confirmation
+  const { isSuccess: mined } = useWaitForTransactionReceipt({
+    hash: pendingHash,
+    chainId: base.id,
+    confirmations: 1,
+    query: { enabled: !!pendingHash },
+  });
+
+  // click lock to avoid double-send
+  const clickedRef = useRef(false);
 
   const state = useRef<'start' | 'countdown' | 'playing' | 'over'>('start');
   const objects = useRef<{ x: number; y: number; size: number; color: string; speed: number; type: 'star' | 'rock' }[]>([]);
@@ -48,6 +62,17 @@ export default function Page() {
     })();
     document.title = 'Catch the Stars — Music Edition';
   }, []);
+
+  // start game after receipt mined
+  useEffect(() => {
+    if (mined && pendingHash) {
+      setHint('Payment confirmed  starting');
+      setPendingHash(undefined);
+      startCountdownThenPlay();
+      setPaying(false);
+      clickedRef.current = false;
+    }
+  }, [mined, pendingHash]);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -236,14 +261,14 @@ export default function Page() {
     }, 1000);
   }
 
-  // SIMPLE BASE MAINNET TX via Wagmi (compact Confirm sheet)
+  // SIMPLE BASE MAINNET TX via Wagmi, with uniqueness + receipt wait + click lock
   async function startGame() {
     if (!isConnected || !address) {
       setHint('Connect your wallet first!');
       return;
     }
-    if (paying) return;
-
+    if (paying || clickedRef.current) return; // lock
+    clickedRef.current = true;
     setPaying(true);
     setHint('opening wallet…');
 
@@ -255,24 +280,35 @@ export default function Page() {
         return;
       }
 
-      // This triggers the small "Confirm transaction" sheet.
-      // Use any recipient you like (self, treasury, etc.).
-      const txHash = await sendTransactionAsync({
-        to: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',        // recipient
-        value: parseEther('0.00001'),                           // ETH amount
-        chainId: base.id,                                       // Base mainnet
+      // make tx unique every time: tiny wei bump + memo data
+      const uniqueWeiBump = BigInt(Date.now() % 6); // 0..5 wei
+      const memo = `play:${Date.now()}`;
+      const hash = await sendTransactionAsync({
+        to: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
+        value: parseEther('0.00001') + uniqueWeiBump,
+        data: stringToHex(memo) as Hex,
+        chainId: base.id,
       });
 
-      if (txHash) {
-        startCountdownThenPlay();
-      } else {
+      if (!hash) {
         setHint('Transaction cancelled or blocked');
+        return;
       }
+
+      // wait for confirmation before starting
+      setHint('waiting for confirmation');
+      setPendingHash(hash);
+      // startCountdownThenPlay() is triggered by the mined effect
+      return;
     } catch (err) {
       console.error(err);
       setHint('Transaction cancelled or blocked');
     } finally {
-      setPaying(false);
+      // keep paying true until mined to block UI; reset is in mined effect
+      if (!pendingHash) {
+        setPaying(false);
+        clickedRef.current = false;
+      }
     }
   }
 
@@ -308,12 +344,15 @@ export default function Page() {
           alignItems: 'center',
         }}
       >
-        <button onClick={startGame} style={btn} disabled={paying}>
-          {paying ? 'Processing…' : 'Play'}
+        <button onClick={startGame} style={btn} disabled={paying || !!pendingHash}>
+          {pendingHash ? 'Confirming…' : paying ? 'Processing…' : 'Play'}
         </button>
-        <button onClick={startCountdownThenPlay} style={{ ...btn, background: '#2a1f3b' }}>
+
+        {/* Restart now also pays again — no free starts */}
+        <button onClick={startGame} style={{ ...btn, background: '#2a1f3b' }} disabled={paying || !!pendingHash}>
           Restart
         </button>
+
         <ConnectWallet />
       </div>
 
