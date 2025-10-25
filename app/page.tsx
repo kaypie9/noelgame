@@ -257,8 +257,16 @@ const clickLockUntil = useRef(0);
         try { await switchChainAsync({ chainId: CHAIN_ID }); }
         catch { throw new Error('switch'); }
       }
-      const request = { to: TREASURY, value: PRICE_WEI, chainId: CHAIN_ID, data: buildMemoData() } as const;
-      return await sendTransactionAsync(request);
+
+        // add a tiny random "dust" to make tx always unique
+  const dust = BigInt(Math.floor(Math.random() * 10)); // 0–9 wei
+  const value = PRICE_WEI + dust;
+
+  const memo = `play:${Date.now()}:${sessionSalt.current}:${attemptRef.current++}`;
+  const data = stringToHex(memo) as Hex;
+
+  const request = { to: TREASURY, value, chainId: CHAIN_ID, data } as const;
+  return await sendTransactionAsync(request);
     };
 
     try {
