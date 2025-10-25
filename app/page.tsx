@@ -241,66 +241,108 @@ const clickLockUntil = useRef(0);
     }
 
   /** Charge in Base ETH, then (on receipt) start */
-  async function payThenStart() {
-    if (!isConnected || !address) { setHint('Connect your wallet first'); return; }
-    if (!playClickGuard()) return;
-    if (paying || waitingReceipt || pendingHash) return;
+/** Charge in Base ETH, then (on receipt) start — force-unique + smart retries */
+async function payThenStart() {
+  if (!isConnected || !address) { setHint('Connect your wallet first'); return; }
+  // only allow from start / over screens
+  if (!['start','over'].includes(state.current)) { setHint('Finish the round first'); return; }
+  if (paying || waitingReceipt || pendingHash) return;
 
-    if (PRICE_WEI <= BigInt(0)) { setHint('Config error: zero price'); return; }
+  if (PRICE_WEI <= BigInt(0)) { setHint('Config error: zero price'); return; }
 
-    setPaying(true);
-    setHint('Opening wallet…');
+  setPaying(true);
+  setHint('Opening wallet…');
 
-    const trySend = async (): Promise<`0x${string}`> => {
-      // ensure correct chain
-      if (currentChainId !== CHAIN_ID) {
-        try { await switchChainAsync({ chainId: CHAIN_ID }); }
-        catch { throw new Error('switch'); }
-      }
+  // tiny function to build a tx request that's always unique
+  const buildTx = (attempt: number, withData: boolean) => {
+    // 1) value bump: add 1–19 wei (depends on time + attempt)
+    const bump = BigInt((Date.now() % 19) + 1 + attempt);
+    const value = PRICE_WEI + bump;
 
-        // add a tiny random "dust" to make tx always unique
-  const dust = BigInt(Math.floor(Math.random() * 10)); // 0–9 wei
-  const value = PRICE_WEI + dust;
+    // 2) randomize gas a bit so AA wallets don’t collapse identical ops
+    //    note: safe, still within normal ranges; Base will cap at network min/max
+const baseTip = BigInt(100000000); // 0.1 gwei
+const jitter  = BigInt(Math.floor(Math.random() * 30)) * BigInt(1_000_000); // up to ~0.03 gwei
+const maxPriorityFeePerGas = baseTip + jitter;
+const maxFeePerGas         = maxPriorityFeePerGas + BigInt(1_000_000);
 
-  const memo = `play:${Date.now()}:${sessionSalt.current}:${attemptRef.current++}`;
-  const data = stringToHex(memo) as Hex;
 
-  const request = { to: TREASURY, value, chainId: CHAIN_ID, data } as const;
-  return await sendTransactionAsync(request);
+    const request: any = {
+      to: TREASURY,
+      value,
+      chainId: CHAIN_ID,
+      // force EIP-1559 shape so wallets see a diff every time
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      type: 'eip1559',
     };
 
-    try {
-      await sdk.actions.ready().catch(() => {});
-      const inside = await sdk.isInMiniApp().catch(() => false);
-      if (!inside) { setHint('Open inside Warpcast/Base App'); return; }
+    if (withData) {
+      // unique memo – some smart wallets ignore data to EOAs, but for those that don’t this guarantees uniqueness
+      attemptRef.current += 1;
+      const memo = `play:${Date.now()}:${sessionSalt.current}:${attemptRef.current}`;
+      request.data = stringToHex(memo);
+    }
+    return request;
+  };
 
-      let hash: `0x${string}` | undefined;
+  const trySend = async (attempt: number) => {
+    // ensure correct chain
+    if (currentChainId !== CHAIN_ID) {
+      try { await switchChainAsync({ chainId: CHAIN_ID }); }
+      catch { throw new Error('switch'); }
+    }
+
+    // try w/o data first, then with data (some wallets normalize EOA+data)
+    try {
+      return await sendTransactionAsync(buildTx(attempt, false) as any);
+    } catch (e1: any) {
+      const m1 = String(e1?.message || e1);
+      // fall through to with-data path on “no changes” style errors
+      if (/no changes detected|already known|identical|nothing to do/i.test(m1)) {
+        return await sendTransactionAsync(buildTx(attempt, true) as any);
+      }
+      throw e1;
+    }
+  };
+
+  try {
+    await sdk.actions.ready().catch(() => {});
+    const inside = await sdk.isInMiniApp().catch(() => false);
+    if (!inside) { setHint('Open inside Warpcast/Base App'); return; }
+
+    let hash: `0x${string}` | undefined;
+
+    // up to 3 attempts, each with unique value/gas shape
+    for (let i = 0; i < 3 && !hash; i++) {
       try {
-        hash = await trySend();
+        hash = await trySend(i);
       } catch (e: any) {
         const msg = String(e?.message || e);
-        // auto retry once on no changes / identical tx style errors
-        if (/no changes detected|no changes to send|already known/i.test(msg)) {
-          setHint('Refreshing tx…');
-          hash = await trySend();
-        } else if (msg === 'switch') {
-          setHint('Please switch to Base');
-          return;
-        } else {
-          throw e;
+        // user cancelled
+        if (/user rejected|denied|cancel/i.test(msg)) { setHint('Transaction cancelled'); break; }
+        // ask to switch once
+        if (msg === 'switch') { setHint('Please switch to Base'); break; }
+        // on “no changes” keep looping to next attempt
+        if (/no changes detected|already known|identical|nothing to do/i.test(msg)) {
+          setHint('Refreshing tx…'); 
+          continue;
         }
+        // other errors: retry one more time, else stop
+        if (i === 2) throw e;
       }
-
-      if (!hash) { setHint('Transaction not created'); return; }
-      setHint('Waiting for confirmation…');
-      setPendingHash(hash);
-    } catch (err) {
-      console.error(err);
-      setHint('Transaction cancelled or blocked');
-    } finally {
-      setPaying(false);
     }
+
+    if (!hash) { setHint('Couldn’t create transaction'); return; }
+    setHint('Waiting for confirmation…');
+    setPendingHash(hash);
+  } catch (err) {
+    console.error(err);
+    setHint('Transaction failed');
+  } finally {
+    setPaying(false);
   }
+}
 
   const playDisabled = paying || waitingReceipt || !!pendingHash || (state.current !== 'start' && state.current !== 'over');
 
