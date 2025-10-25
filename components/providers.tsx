@@ -1,45 +1,28 @@
 'use client';
 
-import { useAccount, useConnect, useDisconnect } from 'wagmi';
+import { ReactNode, useMemo } from 'react';
+import { WagmiProvider, createConfig, http } from 'wagmi';
+import { base } from 'wagmi/chains';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { farcasterMiniApp } from '@farcaster/miniapp-wagmi-connector';
 
-const btn: React.CSSProperties = {
-  background: '#8e44ad',
-  color: '#fff',
-  border: 'none',
-  padding: '8px 12px',
-  borderRadius: 12,
-  fontWeight: 700,
-  cursor: 'pointer',
-};
+export default function Providers({ children }: { children: ReactNode }) {
+  const queryClient = useMemo(() => new QueryClient(), []);
 
-export default function ConnectWallet() {
-  const { address, isConnected } = useAccount();
-  const { connect, connectors, status } = useConnect();
-  const { disconnect } = useDisconnect();
-
-  // pick the Farcaster Mini App connector from the configured list
-  const fc = connectors.find(c => c.name?.toLowerCase().includes('farcaster')) ?? connectors[0];
-
-  const short = (a?: `0x${string}`) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : '');
-
-  if (!isConnected) {
-    return (
-      <button
-        style={btn}
-        onClick={() => fc && connect({ connector: fc })}
-        disabled={status === 'pending' || !fc}
-      >
-        {status === 'pending' ? 'Connecting…' : 'Connect'}
-      </button>
-    );
-  }
+  const wagmiConfig = useMemo(
+    () =>
+      createConfig({
+        chains: [base],
+        transports: { [base.id]: http() }, // replace with your own RPC if you want
+        connectors: [farcasterMiniApp()],
+        ssr: false, // IMPORTANT for Next app router
+      }),
+    []
+  );
 
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-      <span style={{ fontWeight: 700 }}>{short(address as any)}</span>
-      <button style={{ ...btn, background: '#2a1f3b' }} onClick={() => disconnect()}>
-        Disconnect
-      </button>
-    </div>
+    <QueryClientProvider client={queryClient}>
+      <WagmiProvider config={wagmiConfig}>{children}</WagmiProvider>
+    </QueryClientProvider>
   );
 }
