@@ -61,10 +61,11 @@ export default function Page() {
       const w = wrap.clientWidth
       const h = Math.floor(w / (9 / 16))
       const dpr = window.devicePixelRatio || 1
-      canvas.width = w * dpr
-      canvas.height = h * dpr
-      canvas.style.width = w + 'px'
-      canvas.style.height = h + 'px'
+      const canvasEl = canvasRef.current!
+      canvasEl.width = w * dpr
+      canvasEl.height = h * dpr
+      canvasEl.style.width = w + 'px'
+      canvasEl.style.height = h + 'px'
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       W.current = w
       H.current = h
@@ -228,7 +229,7 @@ export default function Page() {
     }, 1000)
   }
 
-  // ⬇️ TRY native Base ETH first; if the host doesn’t honor it, fallback to zero-address ERC-20.
+  // === Farcaster docs flow: open wallet sheet, user picks token → review → confirm ===
   async function startGame() {
     if (!isConnected) {
       setHint('Connect your wallet first!')
@@ -236,9 +237,10 @@ export default function Page() {
     }
     if (paying) return
     setPaying(true)
-    setHint('opening payment…')
+    setHint('opening wallet…')
 
     try {
+      // Ensure Mini App context (docs recommend this)
       await sdk.actions.ready().catch(() => {})
       const inside = await sdk.isInMiniApp().catch(() => false)
       if (!inside) {
@@ -246,40 +248,23 @@ export default function Page() {
         return
       }
 
-      const argsNative = {
+      // Minimal docs-style call: user can choose token (ETH on Base, etc.)
+      // Amount must be a string in wei. parseEther('0.00001') => BigInt → cast to string.
+      const res: any = await sdk.actions.sendToken({
         recipientAddress: '0xa0E19656321CaBaF46d434Fa71B263AbB6959F07',
-        token: 'eip155:8453/slip44:60',                 // Base ETH (native form)
         amount: parseEther('0.00001').toString(),
-      } as const
+        // token omitted on purpose → host shows token chooser (per docs)
+      })
 
-      let res: any
-      try {
-        res = await sdk.actions.sendToken(argsNative)
-        console.log('[miniapp] sendToken (native):', res)
-      } catch (e) {
-        console.warn('[miniapp] native form failed:', e)
-      }
-
-      if (!res || !(res.success === true || res.txHash)) {
-        const argsFallback = {
-          recipientAddress: argsNative.recipientAddress,
-          token: 'eip155:8453/erc20:0x0000000000000000000000000000000000000000', // fallback “native”
-          amount: argsNative.amount,
-        } as const
-        res = await sdk.actions.sendToken(argsFallback)
-        console.log('[miniapp] sendToken (fallback):', res)
-      }
-
-      const r: any = res || {}
-      if (r && (r.success === true || r.txHash)) {
+      if (res && (res.success === true || res.txHash)) {
         startCountdownThenPlay()
       } else {
-        const msg = r?.error?.message || r?.reason || 'Transaction cancelled or blocked'
+        const msg = res?.error?.message || res?.reason || 'Transaction cancelled'
         setHint(msg)
       }
     } catch (err) {
-      console.error('[miniapp] sendToken error:', err)
-      setHint('Transaction cancelled or blocked')
+      console.error(err)
+      setHint('Transaction cancelled')
     } finally {
       setPaying(false)
     }
